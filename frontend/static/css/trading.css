@@ -117,24 +117,27 @@ body {
 }
 
 /* Widget Grid Layout */
+/* Widget Grid Layout */
 .widget-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
-    gap: 20px;
+    /* Force 2 columns on most screens by lowering min-width */
+    grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+    gap: 15px;
     margin-bottom: 20px;
 }
 
 .stock-widget {
     background-color: #161b22;
     border: 1px solid #30363d;
-    border-radius: 8px;
+    border-radius: 6px;
     overflow: hidden;
     display: flex;
     flex-direction: column;
 }
 
 .widget-header {
-    padding: 15px;
+    padding: 10px 15px;
+    /* Thinner header */
     background-color: #21262d;
     border-bottom: 1px solid #30363d;
     display: flex;
@@ -145,23 +148,24 @@ body {
 .header-left {
     display: flex;
     align-items: baseline;
-    gap: 15px;
+    gap: 12px;
 }
 
 .header-symbol {
-    font-size: 1.2rem;
+    font-size: 1.1rem;
+    /* Smaller font */
     font-weight: bold;
     color: #58a6ff;
 }
 
 .header-price {
-    font-size: 1.3rem;
+    font-size: 1.2rem;
     font-weight: bold;
     color: #c9d1d9;
 }
 
 .header-change {
-    font-size: 1rem;
+    font-size: 0.95rem;
     font-weight: 500;
 }
 

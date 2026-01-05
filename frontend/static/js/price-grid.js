@@ -165,6 +165,7 @@ class PriceGrid {
         Object.entries(data).forEach(([symbol, priceData]) => {
             if (this.widgets.has(symbol)) {
                 this.updateWidgetHeader(symbol, priceData);
+                if (symbol === 'BANKNIFTY') this.updateHeroCard(priceData);
             } else {
                 // It's an option, find parent
                 const match = symbol.match(/^([A-Z]+)/);
@@ -183,6 +184,7 @@ class PriceGrid {
         // If it's a parent widget
         if (this.widgets.has(symbol)) {
             this.updateWidgetHeader(symbol, data);
+            if (symbol === 'BANKNIFTY') this.updateHeroCard(data);
         }
         // If it's an option row
         else if (this.optionRows.has(symbol)) {
@@ -201,6 +203,7 @@ class PriceGrid {
                     <div class="header-symbol">${symbol}</div>
                     <div class="header-price">--</div>
                     <div class="header-change">--</div>
+                    <div class="header-trend" style="font-size: 0.8rem; margin-left: 10px;">--</div>
                 </div>
                 <div class="actions-cell">
                     <button onclick="window.priceGrid.trade('${symbol}', 'BUY', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-buy" title="Buy">B</button>
@@ -246,7 +249,17 @@ class PriceGrid {
         changeEl.textContent = `${this.formatChange(change)} (${Math.abs(changePercent).toFixed(2)}%)`;
         changeEl.className = 'header-change ' + this.getChangeClass(change);
 
-        // Flash effect logic could go here
+        // Update Trend/Macro
+        const trendEl = widget.querySelector('.header-trend');
+        const macro = data.macro || {};
+        const trendText = data.trend || '-';
+        const macroText = macro.trend ? macro.trend[0] : '-';
+
+        trendEl.innerHTML = `
+            <span class="${trendText === 'BULLISH' ? 'text-green-400' : trendText === 'BEARISH' ? 'text-red-400' : 'text-gray-500'}">${trendText}</span> 
+            <span class="text-xs text-gray-600">|</span> 
+            <span class="${macro.trend === 'BULLISH' ? 'text-green-400' : macro.trend === 'BEARISH' ? 'text-red-400' : 'text-gray-500'}">${macroText}</span>
+        `;
     }
 
     addOptionRow(parent, symbol, data) {
@@ -343,6 +356,27 @@ class PriceGrid {
         } catch (e) {
             alert(`Network Error: ${e}`);
         }
+    }
+
+    updateHeroCard(data) {
+        if (!this.bankniftyPrice || !this.bankniftyChange) return;
+
+        const ltp = parseFloat(data.ltp || 0);
+        const change = parseFloat(data.change || 0);
+        let changePercent = 0;
+        if (data.change !== 0) {
+            const prev = ltp - change;
+            if (Math.abs(prev) > 0.01) changePercent = (change / prev) * 100;
+        }
+
+        this.bankniftyPrice.textContent = this.formatPrice(ltp);
+        this.bankniftyChange.innerHTML = `
+            <span class="change-value ${this.getChangeClass(change)}">${this.formatChange(change)}</span>
+            <span class="change-percent ${this.getChangeClass(changePercent)}">(${Math.abs(changePercent).toFixed(2)}%)</span>
+        `;
+
+        const now = new Date();
+        if (this.lastUpdate) this.lastUpdate.textContent = now.toLocaleTimeString();
     }
 
     updateLatency(latency) {
