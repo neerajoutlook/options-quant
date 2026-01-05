@@ -30,6 +30,43 @@ body {
 .header-actions {
     margin-left: auto;
     margin-right: 20px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.qty-controls {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    background: #161b22;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #30363d;
+}
+
+.qty-controls label {
+    font-size: 0.9rem;
+    color: #8b949e;
+    font-weight: 500;
+}
+
+.qty-controls input {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    padding: 4px 8px;
+    border-radius: 4px;
+    width: 50px;
+    margin-left: 8px;
+    text-align: center;
+    font-family: 'Segoe UI', monospace;
+    font-weight: bold;
+}
+
+.qty-controls input:focus {
+    outline: none;
+    border-color: #58a6ff;
 }
 
 .btn-panic {

@@ -323,11 +323,27 @@ class PriceGrid {
     }
 
     getLotSize(symbol) {
-        // Simple logic: if symbol contains BANKNIFTY -> 15, NIFTY -> 50
-        // Or check pure symbol
-        if (symbol.includes('BANKNIFTY')) return this.lotSizes['BANKNIFTY'] || 15;
-        if (symbol.includes('NIFTY')) return this.lotSizes['NIFTY'] || 50;
-        return 1;
+        // Determine if Option or Stock
+        const isOption = /\d/.test(symbol) || symbol.includes('CE') || symbol.includes('PE');
+        let multiplier = 1;
+
+        if (isOption) {
+            const input = document.getElementById('qty-option');
+            if (input) multiplier = parseInt(input.value) || 1;
+
+            // Base logic: BANKNIFTY -> 15, NIFTY -> 50
+            let base = 1;
+            if (symbol.includes('BANKNIFTY')) base = this.lotSizes['BANKNIFTY'] || 15;
+            else if (symbol.includes('NIFTY')) base = this.lotSizes['NIFTY'] || 50;
+            else base = 1; // Default for stock options if not in config
+
+            return base * multiplier;
+        } else {
+            // Stock Logic
+            const input = document.getElementById('qty-stock');
+            if (input) multiplier = parseInt(input.value) || 1;
+            return 1 * multiplier;
+        }
     }
 
     async panicExit() {

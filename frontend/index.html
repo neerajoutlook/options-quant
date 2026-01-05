@@ -14,6 +14,10 @@
         <header class="header">
             <h1>Bank Nifty HFT Dashboard</h1>
             <div class="header-actions">
+                <div class="qty-controls">
+                    <label>Stock Qty: <input type="number" id="qty-stock" value="1" min="1"></label>
+                    <label>Opt Lots: <input type="number" id="qty-option" value="1" min="1"></label>
+                </div>
                 <button id="btn-panic" class="btn-panic" onclick="window.priceGrid.panicExit()">🔥 PANIC EXIT
                     ALL</button>
             </div>
