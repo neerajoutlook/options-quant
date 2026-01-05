@@ -2,7 +2,7 @@
 FastAPI WebSocket Server for HFT Trading Platform
 Provides REST API + WebSocket for real-time price streaming
 """
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 import asyncio
@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 import json
+import pydantic
 
 from core.market_data import market_data
 
@@ -122,7 +123,9 @@ async def get_strategy_stats():
         "daily_loss_limit": config.MAX_DAILY_LOSS,
         "auto_exit_time": config.AUTO_EXIT_TIME,
         "current_pnl": 0.0,
-        "auto_trade_enabled": False
+        "auto_trade_enabled": False,
+        "simulation_mode": config.SIMULATION_MODE,
+        "simulation_speed": config.SIMULATION_SPEED
     }
     
     if active_engine:
@@ -134,6 +137,23 @@ async def get_strategy_stats():
             stats["current_pnl"] = pm.realized_pnl + total_unrealized
             
     return stats
+
+class SimConfig(pydantic.BaseModel):
+    enabled: bool
+    speed: float
+
+@app.post("/api/simulation/config")
+async def set_simulation_config(cfg: SimConfig):
+    """Update simulation mode and speed"""
+    from main import active_engine
+    try:
+        if active_engine:
+            active_engine.set_simulation_mode(cfg.enabled, cfg.speed)
+            return {"status": "ok", "message": f"Simulation set to {cfg.enabled} at {cfg.speed}x"}
+        return {"status": "error", "message": "Engine not active"}
+    except Exception as e:
+        logger.error(f"Error setting simulation config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/orders")
 async def get_orders(date: str = None):

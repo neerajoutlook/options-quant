@@ -298,3 +298,38 @@ class ShoonyaSession:
         except Exception as e:
             logger.error(f"Error fetching history for {exchange}|{token}: {e}")
             return None
+
+    def get_quotes(self, exchange: str, token: str) -> Optional[Dict]:
+        """
+        Get live quote for a single instrument.
+        Returns dict with lp (last price), o (open), h (high), l (low), c (close/prev close)
+        """
+        try:
+            ret = self.api.get_quotes(exchange=exchange, token=token)
+            if ret and isinstance(ret, dict):
+                return ret
+            return None
+        except Exception as e:
+            logger.debug(f"Error fetching quote for {exchange}|{token}: {e}")
+            return None
+    
+    def get_quotes_batch(self, instruments: List[str]) -> Dict[str, Dict]:
+        """
+        Get quotes for multiple instruments at once.
+        instruments: List of 'EXCHANGE|TOKEN' strings
+        Returns: Dict mapping 'EXCHANGE|TOKEN' -> quote data
+        """
+        results = {}
+        for inst in instruments:
+            try:
+                parts = inst.split('|')
+                if len(parts) != 2:
+                    continue
+                exchange, token = parts
+                quote = self.get_quotes(exchange, token)
+                if quote:
+                    results[inst] = quote
+            except Exception as e:
+                logger.debug(f"Error fetching quote for {inst}: {e}")
+        return results
+

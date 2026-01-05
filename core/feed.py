@@ -10,7 +10,7 @@ import pandas as pd
 
 from core.shoonya_client import ShoonyaSession
 from core.candles import CandleResampler
-from core.strategy import Strategy, WeightageCalculator, TechnicalIndicators
+from core.strategy import Strategy, WeightageCalculator, TechnicalIndicators, Signal
 from core.telegram_bot import TelegramBot
 from core import config
 from core.order_logger import log_signal, log_order_attempt, log_order_result, log_order_update
@@ -93,15 +93,19 @@ class TickEngine:
         """Login and resolve tokens."""
         logger.info(f"Initializing TickEngine...")
         
-        # Login
-        try:
-            self.shoonya.login()
-        except Exception as e:
-            logger.error(f"Login failed (Switching to OFFLINE mode): {e}")
+        if config.SIMULATION_MODE:
+            logger.info("🛠️ SIMULATION MODE ENABLED: Skipping Login & Forcing Offline/Mock State")
             self.offline = True
-            
+        else:
+            # Login
+            try:
+                self.shoonya.login()
+            except Exception as e:
+                logger.error(f"Login failed: {e}")
+                self.offline = True
+
         if self.offline:
-            logger.warning("⚠️ SYSTEM RUNNING IN OFFLINE MODE (No Live Feed) ⚠️")
+            logger.warning("⚠️ SYSTEM RUNNING IN OFFLINE/SIMULATION MODE (Fake/No Live Feed) ⚠️")
 
         # Load master contract
         
@@ -116,12 +120,21 @@ class TickEngine:
         FALLBACK_HDFCBANK = '1333'
         
         if self.offline:
-            # Populate with fallback tokens
+            # Populate with fallback tokens for SIMULATION
+            logger.info("Initializing Mock Token Map for Simulation...")
+            
+            # 1. Bank Nifty
             self.token_map['BANKNIFTY'] = FALLBACK_BANKNIFTY
             self.reverse_token_map[FALLBACK_BANKNIFTY] = 'BANKNIFTY'
-            self.token_map['HDFCBANK'] = FALLBACK_HDFCBANK
-            self.reverse_token_map[FALLBACK_HDFCBANK] = 'HDFCBANK'
-            logger.info("Offline Mode: using hardcoded tokens.")
+            
+            # 2. Constituents
+            for i, symbol in enumerate(BANKNIFTY_WEIGHTS.keys()):
+                mock_token = str(30000 + i) # Dummy tokens 30000+
+                self.token_map[symbol] = mock_token
+                self.reverse_token_map[mock_token] = symbol
+                self.tracked_stocks.add(symbol)
+                
+            logger.info(f"Offline Mode: Mocked {len(self.token_map)} tokens.")
             return
 
         for symbol in BANKNIFTY_WEIGHTS.keys():
@@ -189,43 +202,142 @@ class TickEngine:
         
         # Subscribe List
         instruments = []
-        for symbol, token in self.token_map.items():
-            # Bank Nifty is on NSE, constituents are also on NSE
-            exchange = "NSE"
-            instruments.append(f"{exchange}|{token}")
-            
-        logger.info(f"Subscribing to {len(instruments)} instruments: {instruments}")
 
-        # Seed History (Fetch data from 9:15 AM today to calculate VWAP)
-        try:
-            self._seed_history()
-        except Exception as e:
-            logger.error(f"Seeding history failed: {e}", exc_info=True)
-        
-        # Fetch Macro Data (Background update)
+        # Load historical data context if needed (to warm up indicators)
+        # self._seed_history()
+
+        # Fetch Macro Data (Background update) - This should run regardless of sim/live mode
         threading.Thread(target=self._update_macro_data).start()
-        
+
         def on_ws_connect():
             # Small delay to ensure WebSocket is fully ready
             time.sleep(0.5)
             logger.info("WebSocket ready, subscribing to instruments...")
+            instruments = []
+            for symbol, token in self.token_map.items():
+                # Bank Nifty is on NSE, constituents are also on NSE
+                exchange = "NSE"
+                instruments.append(f"{exchange}|{token}")
             self.shoonya.subscribe(instruments)
+
+        if config.SIMULATION_MODE:
+            logger.info(f"Starting Simulator Mode (Speed: {config.SIMULATION_SPEED}x)")
+            from core.simulator import MarketSimulator
+            
+            option_metadata = {}
+            
+            # Mock tokens for all constituents if offline/sim mode
+            # Ideally we should do this if token_map is minimal (e.g. only contains hardcoded indices)
+            # or if we are purely offline.
+            if not self.token_map or len(self.token_map) < 5:
+                logger.info("Mocking tokens for Simulation")
+                self.token_map = {
+                    "26000": "NIFTY",
+                    "26009": "BANKNIFTY",
+                }
+                self.reverse_token_map = {
+                    "26000": "NIFTY",
+                    "26009": "BANKNIFTY"
+                }
+                
+                # Mock Constituents to drive BankNifty
+                constituents = ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "INDUSINDBK"]
+                for i, sym in enumerate(constituents):
+                    token = str(30000 + i)
+                    self.token_map[sym] = token
+                    self.reverse_token_map[token] = sym
+                
+                # Generate Mock Options for BANKNIFTY
+                # Spot approx 48000
+                spot_ref = 48000
+                strikes = range(spot_ref - 500, spot_ref + 600, 100)
+                
+                for strike in strikes:
+                    # CE
+                    ce_sym = f"BANKNIFTY24JAN{strike}CE"
+                    ce_token = f"4{strike}CE"
+                    self.token_map[ce_sym] = ce_token
+                    self.reverse_token_map[ce_token] = ce_sym
+                    option_metadata[ce_token] = {
+                        "type": "CE", "strike": strike, "underlying": "BANKNIFTY"
+                    }
+                    
+                    # PE
+                    pe_sym = f"BANKNIFTY24JAN{strike}PE"
+                    pe_token = f"4{strike}PE"
+                    self.token_map[pe_sym] = pe_token
+                    self.reverse_token_map[pe_token] = pe_sym
+                    option_metadata[pe_token] = {
+                        "type": "PE", "strike": strike, "underlying": "BANKNIFTY"
+                    }
+                
+                logger.info(f"Generated {len(option_metadata)} Mock Options.")
+            
+            self.simulator = MarketSimulator(
+                self.token_map, 
+                self.on_tick, 
+                option_metadata=option_metadata, 
+                speed=config.SIMULATION_SPEED
+            )
+            self.simulator.start()
+        else:
+            logger.info("Starting Live Feed (Shoonya)")
+            if not self.shoonya.api:
+                logger.warning("⚠️ Shoonya API not initialized (Login Failed). Auto-switching to SIMULATION MODE.")
+                config.SIMULATION_MODE = True
+                self.start() # Recursive call with new mode
+                return
+
+
+            # Subscribe to tokens
+            # The on_ws_connect will handle subscription after connection
+            self.shoonya.start_websocket(
+                on_ticks=self.on_tick,
+                on_orders=self.on_order_update,
+                on_connect=on_ws_connect
+            )
+
+        logger.info("TickEngine started (non-blocking).")
+
+    def set_simulation_mode(self, enabled: bool, speed: float):
+        """
+        Dynamically switch between Live and Simulation modes.
+        """
+        logger.info(f"Switching Simulation Mode: {enabled} (Speed: {speed}x)")
         
-        self.shoonya.start_websocket(
-            on_ticks=self.on_tick,
-            on_orders=self.on_order_update,
-            on_connect=on_ws_connect
-        )
-        
-        # Keep main thread alive
-        try:
-            while self.running:
-                time.sleep(1)
-        except KeyboardInterrupt:
+        # If toggling mode, we need to restart the feed
+        if enabled != config.SIMULATION_MODE:
+            logger.info("Mode change detected. Restarting feed...")
             self.stop()
+            
+            # Update config
+            config.SIMULATION_MODE = enabled
+            config.SIMULATION_SPEED = speed
+            
+            # Allow some time for cleanup
+            time.sleep(1)
+            
+            # Re-initialize/Start
+            # Note: If switching TO live, we assume Shoonya is already logged in or will fail gracefully
+            if not enabled and self.offline:
+                 # Try to re-login if we were offline? 
+                 # For now, just try to start. If self.shoonya.api is None, it will log error.
+                 pass
+
+            self.start()
+        
+        # If just changing speed
+        elif enabled and config.SIMULATION_MODE:
+            if speed != config.SIMULATION_SPEED:
+                logger.info(f"Updating Simulation Speed to {speed}x")
+                config.SIMULATION_SPEED = speed
+                if hasattr(self, 'simulator') and self.simulator:
+                    self.simulator.speed = speed
 
     def stop(self):
         self.running = False
+        if hasattr(self, 'simulator'):
+            self.simulator.stop()
         self.shoonya.close_websocket()
         logger.info("TickEngine stopped.")
 
@@ -392,8 +504,12 @@ class TickEngine:
                     f"Reason: {signal.reason}"
                 )
                 
-                # Execute the signal
-                self.execute_signal(signal)
+                # Execute the signal logic
+                if self.auto_trading_enabled:
+                    logger.info(f"⚡ AUTO-T: Executing {signal.type} signal")
+                    self.execute_signal(signal)
+                else:
+                    logger.info(f"✋ Manual Mode: Skipping {signal.type} execution")
             else:
                 self.weightage_calc.update_data(symbol, price, volume)
 
@@ -710,33 +826,39 @@ class TickEngine:
         """
         logger.info(f"Manual Order Request: {side} {qty} {symbol} @ {price} ({product_type})")
 
-        # --- OFFLINE/PAPER MODE ---
-        if self.offline:
-            return self._simulate_manual_order(symbol, side, qty, price, reason="OFFLINE")
-            
-        if config.PAPER_TRADING_MODE:
-            return self._simulate_manual_order(symbol, side, qty, price, reason="PAPER_MODE")
-        # ---------------------------
-        
-        # Delegate to OMS
-        order_id = self.order_manager.place_order(symbol, side, qty, product_type=product_type, tag="MANUAL")
+        if price <= 0:
+            current_ltp = market_data.latest_prices.get(symbol, {}).get('ltp', 0.0)
+            if current_ltp > 0:
+                price = current_ltp
+                logger.info(f"Using LTP for {symbol} Order: {price}")
+            else:
+                logger.warning(f"No LTP found for {symbol}, risking 0.0 price (OMS will fallback)")
+
+        # Delegate to OMS (It now handles Paper/Sim modes internally)
+        order_id = self.order_manager.place_order(symbol, side, qty, product_type=product_type, tag="MANUAL", price=price)
         
         if order_id:
-            # ... (success logic)
-            ltp = market_data.latest_prices.get(symbol, {}).get('ltp', 0.0)
+            # Determine if this was a simulated order (SIM_ prefix)
+            is_simulated = order_id.startswith('SIM_')
+            
+            # Get actual fill price
+            fill_price = price if price > 0 else market_data.latest_prices.get(symbol, {}).get('ltp', 0.0)
+            
             order_data = {
                 'id': order_id,
                 'symbol': symbol,
                 'side': side,
                 'qty': qty,
-                'price': ltp,
-                'status': 'PLACED',
+                'price': fill_price if is_simulated else market_data.latest_prices.get(symbol, {}).get('ltp', fill_price),
+                'status': 'FILLED (SIM)' if is_simulated else 'PLACED',
                 'timestamp': datetime.now().isoformat()
             }
             self.order_history.insert(0, order_data)
             if self.db:
                 self.db.save_order(order_data)
             if len(self.order_history) > 50: self.order_history.pop()
+            
+            logger.info(f"✅ Order Logged: {order_data['status']} - {symbol} {side} {qty} @ {fill_price}")
             return {"status": "success", "order_id": order_id}
         else:
             logger.warning(f"OMS Order Failed for {symbol}. Falling back to Simulation.")

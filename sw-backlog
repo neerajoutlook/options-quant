@@ -1,2 +1,8 @@
-QO-001: Strategy strangel, straddel etc, always have cover
-QO-002: 
+[X] QO-001: Strategy strangel, straddel etc, always have cover
+* Fake feeder to develop during off-market hours, 
+* Show option on UI and speed of data Low,Medium,High. 
+* MIS orders positions squared-off before 2:45 PM 
+* Show IST times and use IST timezone for all times
+* Price should fluctuate as per market historical data so we get near real time data
+
+QO-002: dsfs

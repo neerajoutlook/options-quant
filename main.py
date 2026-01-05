@@ -54,6 +54,13 @@ def main():
         engine.initialize()
         telegram.send_message("✅ <b>Bot Ready</b>\n\nConnecting to live feed...")
         engine.start()
+        
+        # Keep running - TickEngine.start is non-blocking
+        import time
+        logger.info("Engine running... Press Ctrl+C to stop.")
+        while engine.running:
+            time.sleep(1.0)
+            
     except KeyboardInterrupt:
         logger.info("Shutdown requested by user")
         telegram.send_message("⏹️ <b>Bot STOPPED</b>\n\nShutdown by user")

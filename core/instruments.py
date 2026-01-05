@@ -168,6 +168,9 @@ class InstrumentManager:
                             'CE': {'token': ce_token, 'tsym': ce_tsym},
                             'PE': {'token': pe_token, 'tsym': pe_tsym}
                         }
+            except AttributeError:
+                # Swallowed specifically for Offline/Simulation mode where API object is incomplete
+                logger.warning(f"API Search skipped (Attributes missing - likely Offline Mode)")
             except Exception as e:
                 logger.error(f"API Search Fallback failed: {e}")
 

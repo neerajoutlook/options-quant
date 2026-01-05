@@ -3,6 +3,7 @@ import asyncio
 from typing import Optional
 from core.shoonya_client import ShoonyaSession
 from .position_manager import PositionManager
+from core import config
 
 logger = logging.getLogger(__name__)
 
@@ -13,15 +14,59 @@ class OrderManager:
     def __init__(self, api_client: ShoonyaSession, position_mgr: PositionManager):
         self.api = api_client
         self.position_mgr = position_mgr
+        self.paper_engine = None
         
-    def place_order(self, symbol: str, side: str, qty: int, product_type: str = 'I', tag: str = "MANUAL"):
+        # Lazy load Paper Engine to avoid circular imports or early init issues
+        if config.PAPER_TRADING_MODE or config.SIMULATION_MODE:
+             from core.paper_trading import PaperTradingEngine
+             self.paper_engine = PaperTradingEngine()
+
+    def place_order(self, symbol: str, side: str, qty: int, product_type: str = 'I', tag: str = "MANUAL", price: float = 0.0):
         """
         Place order and update position.
         product_type: 'I' for MIS (Intraday derivatives), 'M' for NRML (Overnight), 'C' for CNC (Equity Delivery)
+        price: Optional limit price or execution price for simulation. If 0 and MKT, uses best effort.
         """
         try:
-            # 1. Place API Order
-            logger.info(f"OMS Placing Order: {side} {qty} {symbol} ({product_type})")
+            logger.info(f"OMS Placing Order: {side} {qty} {symbol} ({product_type}) Price: {price}")
+            
+            # --- SIMULATION / PAPER TRADING BYPASS ---
+            if config.PAPER_TRADING_MODE or config.SIMULATION_MODE:
+                import time
+                import random
+                
+                sim_order_id = f"SIM_{int(time.time()*1000)}_{random.randint(100,999)}"
+                
+                # Determine Fill Price
+                fill_price = price
+                if fill_price <= 0:
+                    # Try to fetch from PositionManager's internal tracking or use a placeholder
+                    # PositionManager tracks avg_price, but not current LTP usually.
+                    # Best attempt: 
+                    # If we don't have a price, we log a warning.
+                    # In Manual orders via API, price might be 0.
+                    # Ideally the UI passes the last seen price?
+                    fill_price = 1.0 # Fallback to avoid division by zero errors
+                    logger.warning(f"OMS Simulation: No price provided for {symbol}. Using fallback {fill_price}")
+                
+                logger.info(f"📝 SIMULATION/PAPER: Simulating Fill for {symbol} Order {sim_order_id} @ {fill_price}")
+                
+                if self.paper_engine:
+                    # Log to paper engine
+                    self.paper_engine.enter_position(
+                        signal_type=f"{side}_{product_type}",
+                        entry_price=fill_price,
+                        strike=0, 
+                        quantity=qty,
+                        reason=tag
+                    )
+                
+                # Simulate Immediate Fill
+                self.position_mgr.on_fill(symbol, qty, fill_price, side, product_type)
+                
+                return sim_order_id
+            
+            # --- REAL TRADING ---
             
             # Signature: buy_or_sell, product_type, exchange, tradingsymbol, quantity, discloseqty, price_type, ...
             buy_or_sell = side[0].upper() # 'B' or 'S'

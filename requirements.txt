@@ -11,3 +11,4 @@ fastapi
 uvicorn
 aioredis
 msgpack
+yfinance

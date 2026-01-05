@@ -18,6 +18,7 @@
                 <div id="strategy-badges" class="strategy-badges">
                     <span id="badge-hedged" class="s-badge hidden">HEDGED</span>
                     <span id="badge-straddle" class="s-badge hidden">STRADDLE</span>
+                    <span id="badge-simulator" class="s-badge hidden">SIMULATOR</span>
                 </div>
             </h1>
             <div class="header-actions">
@@ -82,6 +83,26 @@
                             Clear</button>
                     </div>
                 </div>
+
+                <!-- Simulation Controls -->
+                <div class="sim-controls-panel">
+                    <div class="sim-header">
+                        <h3>Simulation</h3>
+                        <label class="switch">
+                            <input type="checkbox" id="sim-mode-toggle">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                    <div id="sim-speed-controls" class="sim-speed-controls hidden">
+                        <label>Speed:</label>
+                        <div class="speed-options">
+                            <label><input type="radio" name="sim-speed" value="1.0"> 1x</label>
+                            <label><input type="radio" name="sim-speed" value="5.0"> 5x</label>
+                            <label><input type="radio" name="sim-speed" value="10.0"> 10x</label>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="orders-log" class="orders-log">
                     <div class="empty-log">No recent orders</div>
                 </div>

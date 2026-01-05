@@ -56,6 +56,10 @@ body {
     font-weight: bold;
     margin-left: 10px;
     border: 1px solid #374151;
+    min-width: 140px;
+    text-align: center;
+    display: inline-block;
+    white-space: nowrap;
 }
 
 .ai-signal-buy {
@@ -101,6 +105,13 @@ body {
     color: #d2a8ff;
     border-color: rgba(188, 128, 255, 0.4);
     box-shadow: 0 0 8px rgba(188, 128, 255, 0.15);
+}
+
+#badge-simulator {
+    background: rgba(236, 72, 153, 0.1);
+    color: #f472b6;
+    border-color: rgba(236, 72, 153, 0.4);
+    box-shadow: 0 0 8px rgba(236, 72, 153, 0.15);
 }
 
 .s-badge.hidden {

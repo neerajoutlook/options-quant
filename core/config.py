@@ -44,3 +44,7 @@ TSL_TRAIL_PERCENT = float(os.getenv("TSL_TRAIL_PERCENT", "5.0"))  # Trail by 5%
 # Safety Net / Day Limits
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "5000")) # Hard daily stop ₹
 AUTO_EXIT_TIME = os.getenv("AUTO_EXIT_TIME", "15:15") # Square off all at this time
+
+# Simulation
+SIMULATION_MODE = os.getenv("SIMULATION_MODE", "TRUE").upper() == "TRUE"
+SIMULATION_SPEED = float(os.getenv("SIMULATION_SPEED", "1.0"))

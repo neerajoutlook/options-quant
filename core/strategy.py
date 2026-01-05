@@ -250,6 +250,14 @@ class Strategy:
         
         # Factor D: Momentum (The "Turnaround" factor)
         score += mom_score
+
+        # --- SIMULATION BOOST ---
+        # Random walk data is too noisy/flat for strict strategy.
+        # Boost score loosely to demonstrate auto-trading mechanics
+        if config.SIMULATION_MODE and self.position is None:
+             if score > 0.5: score += 1.5 # Boost weak buy
+             elif score < -0.5: score -= 1.5 # Boost weak sell
+
         
         # 4. Signal Smoothing
         self.score_buffer.append(score)

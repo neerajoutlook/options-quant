@@ -57,6 +57,7 @@ class PriceGrid {
 
         this.initModeToggle();
         this.initAutoTradeToggle();
+        this.initSimulationControls();
 
         // History Controls
         this.historyDateInput = document.getElementById('history-date');
@@ -152,6 +153,73 @@ class PriceGrid {
         }
     }
 
+    initSimulationControls() {
+        this.simToggle = document.getElementById('sim-mode-toggle');
+        this.simSpeedControls = document.getElementById('sim-speed-controls');
+        this.simSpeedRadios = document.getElementsByName('sim-speed');
+
+        if (!this.simToggle) return;
+
+        // Toggle Event
+        this.simToggle.addEventListener('change', async (e) => {
+            const enabled = e.target.checked;
+            const speed = this.getSimSpeed();
+            await this.setSimulationConfig(enabled, speed);
+        });
+
+        // Speed Radio Events
+        if (this.simSpeedRadios) {
+            this.simSpeedRadios.forEach(radio => {
+                radio.addEventListener('change', async (e) => {
+                    const enabled = this.simToggle.checked;
+                    // Only update if simulator is ON (or maybe allowed even if off? Logic says yes)
+                    const speed = parseFloat(e.target.value);
+                    await this.setSimulationConfig(enabled, speed);
+                });
+            });
+        }
+    }
+
+    getSimSpeed() {
+        let speed = 1.0;
+        if (this.simSpeedRadios) {
+            this.simSpeedRadios.forEach(r => {
+                if (r.checked) speed = parseFloat(r.value);
+            });
+        }
+        return speed;
+    }
+
+    async setSimulationConfig(enabled, speed) {
+        try {
+            await fetch('/api/simulation/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled, speed })
+            });
+            // Controls visibility update handled by updateStats which runs every 5s, 
+            // but for responsiveness we can update UI immediately too
+            this.updateSimUI(enabled, speed);
+        } catch (e) {
+            console.error('Sim Config Error', e);
+            alert('Failed to update Simulation settings');
+            // Revert UI if needed?
+        }
+    }
+
+    updateSimUI(enabled, speed) {
+        if (this.simToggle) this.simToggle.checked = enabled;
+        if (this.simSpeedControls) {
+            // Show speed controls only if enabled
+            this.simSpeedControls.classList.toggle('hidden', !enabled);
+        }
+        if (this.simSpeedRadios) {
+            this.simSpeedRadios.forEach(r => {
+                if (Math.abs(parseFloat(r.value) - speed) < 0.1) r.checked = true;
+            });
+        }
+    }
+
     startStatsSync() {
         this.updateStats(); // Initial fetch
         setInterval(() => this.updateStats(), 5000);
@@ -167,6 +235,12 @@ class PriceGrid {
             const badgeStraddle = document.getElementById('badge-straddle');
             if (badgeHedged) badgeHedged.classList.toggle('hidden', !data.hedged_mode);
             if (badgeStraddle) badgeStraddle.classList.toggle('hidden', !data.straddle_mode);
+
+            const badgeSim = document.getElementById('badge-simulator');
+            if (badgeSim) badgeSim.classList.toggle('hidden', !data.simulation_mode);
+
+            // Sync Simulator UI Controls
+            this.updateSimUI(data.simulation_mode, data.simulation_speed);
 
             // Daily Stop Metric
             const dailyStopEl = document.getElementById('daily-stop');
@@ -421,15 +495,26 @@ class PriceGrid {
 
             // Dynamic column movement
             const pct = data.percent_change || 0;
-            const targetColumn = pct >= 0 ? this.bullsList : this.bearsList;
+            const targetColumn = data.percent_change >= 0 ? this.bullsList : this.bearsList;
             if (widget.parentElement !== targetColumn && targetColumn) {
                 targetColumn.appendChild(widget);
             }
             widget.dataset.pct = pct; // For sorting
         }
-        // If it's an option row
+        // If it's an existing option row
         else if (this.optionRows.has(symbol)) {
             this.updateOptionRow(symbol, data);
+        }
+        // If it's a NEW option (not in rows yet)
+        else if (/\d/.test(symbol) || symbol.includes('CE') || symbol.includes('PE')) {
+            // Try to find parent
+            const match = symbol.match(/^([A-Z]+)/);
+            const parent = match ? match[1] : null;
+
+            if (parent && this.widgets.has(parent)) {
+                // Initial creation handling
+                this.addOptionRow(parent, symbol, data);
+            }
         }
     }
 
