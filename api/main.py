@@ -2,7 +2,7 @@
 FastAPI WebSocket Server for HFT Trading Platform
 Provides REST API + WebSocket for real-time price streaming
 """
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 import asyncio
@@ -89,14 +89,106 @@ async def get_positions():
         from main import active_engine
         if active_engine and hasattr(active_engine, 'position_manager'):
             # Trigger P&L update with latest prices before returning
-            active_engine.position_manager.update_pnl(market_data.latest_prices)
+            pm = active_engine.position_manager
+            pm.update_pnl(market_data.latest_prices)
+            
+            # Convert tuple keys (symbol, product) to strings for JSON
+            serializable_positions = {}
+            for (sym, prd), pos in pm.positions.items():
+                price_data = market_data.latest_prices.get(sym, {})
+                pos_data = pos.copy()
+                pos_data['ltp'] = price_data.get('ltp', pos['avg_price'])
+                serializable_positions[f"{sym}:{prd}"] = pos_data
+            
+            total_unrealized = sum(p['unrealized_pnl'] for p in pm.positions.values())
+            
             return {
-                "positions": active_engine.position_manager.positions,
-                "total_pnl": active_engine.position_manager.realized_pnl + sum(p['unrealized_pnl'] for p in active_engine.position_manager.positions.values())
+                "positions": serializable_positions,
+                "total_pnl": pm.realized_pnl + total_unrealized
             }
         return {"positions": {}, "total_pnl": 0.0}
     except Exception as e:
         return {"error": str(e)}
+
+@app.get("/api/orders")
+async def get_orders(date: str = None):
+    """Get recent order history and logs, optionally filtered by date (YYYY-MM-DD)"""
+    try:
+        from core.database import db
+        if date:
+            return {"orders": db.get_orders_by_date(date)}
+            
+        from main import active_engine
+        if active_engine and hasattr(active_engine, 'order_history'):
+            if not active_engine.order_history:
+                # If in-memory is empty, try loading from DB
+                return {"orders": db.get_recent_orders()}
+            return {"orders": active_engine.order_history}
+        return {"orders": db.get_recent_orders()}
+    except Exception as e:
+        logger.error(f"API Orders Error: {e}")
+        return {"error": str(e)}
+
+@app.post("/api/orders/clear")
+async def clear_orders(date: str = Query(...)):
+    """Clear order history for a specific date"""
+    try:
+        from core.database import db
+        db.clear_orders_for_date(date)
+        
+        # Also clear in-memory history if it's for today
+        today = datetime.now().strftime("%Y-%m-%d")
+        if date == today:
+            from main import active_engine
+            if active_engine and hasattr(active_engine, 'order_history'):
+                active_engine.order_history = []
+                
+        return {"status": "success", "message": f"History for {date} cleared"}
+    except Exception as e:
+        logger.error(f"API Clear Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/mode")
+async def get_trading_mode():
+    """Get the current trading mode (Real or Paper)"""
+    from core import config
+    from core.database import db
+    # Sync with DB if available
+    db_mode = db.get_state("paper_trading_mode")
+    if db_mode is not None:
+        config.PAPER_TRADING_MODE = (db_mode == "True")
+    return {"paper_trading_mode": config.PAPER_TRADING_MODE}
+
+@app.post("/api/mode")
+async def set_trading_mode(paper_mode: bool = Query(...)):
+    """Update the trading mode dynamically (Real or Paper)"""
+    from core import config
+    from core.database import db
+    config.PAPER_TRADING_MODE = paper_mode
+    db.save_state("paper_trading_mode", paper_mode)
+    logger.warning(f"🔄 Trading mode changed to: {'PAPER' if paper_mode else 'REAL'}")
+    return {"status": "success", "paper_trading_mode": config.PAPER_TRADING_MODE}
+@app.get("/api/auto_trade")
+async def get_auto_trade():
+    """Get the current AI Auto-Trading status"""
+    from main import active_engine
+    enabled = False
+    if active_engine and hasattr(active_engine, 'auto_trading_enabled'):
+        enabled = active_engine.auto_trading_enabled
+    return {"auto_trading_enabled": enabled}
+
+@app.post("/api/auto_trade")
+async def set_auto_trade(enabled: bool = Query(...)):
+    """Toggle AI Auto-Trading status"""
+    from main import active_engine
+    from core.database import db
+    if active_engine and hasattr(active_engine, 'auto_trading_enabled'):
+        active_engine.auto_trading_enabled = enabled
+        db.save_state("auto_trading_enabled", enabled)
+        logger.info(f"🔄 AI Auto-Trading {'ENABLED' if enabled else 'DISABLED'}")
+        return {"status": "success", "auto_trading_enabled": enabled}
+    return {"status": "error", "message": "Engine not ready"}
 
 @app.get("/api/risk")
 async def get_risk_config():
@@ -205,6 +297,14 @@ class OrderRequest(BaseModel):
     side: str # BUY, SELL
     qty: int
     price: float = 0.0
+    product_type: str = 'I' # Default to MIS
+
+class GTTRequest(BaseModel):
+    symbol: str
+    side: str
+    qty: int
+    trigger_price: float
+    product_type: str = 'I'
 
 @app.post("/api/order")
 async def place_order(order: OrderRequest):
@@ -218,11 +318,42 @@ async def place_order(order: OrderRequest):
             symbol=order.symbol.upper(),
             side=order.side.upper(),
             qty=order.qty,
-            price=order.price
+            price=order.price,
+            product_type=order.product_type
         )
         return result
     except Exception as e:
         logger.error(f"API Order Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/order/cancel")
+async def cancel_order(order_id: str = Query(...)):
+    """Cancel an active order"""
+    try:
+        from main import active_engine
+        if not active_engine:
+            return {"status": "error", "message": "Trading Engine not ready"}
+        return active_engine.cancel_order(order_id)
+    except Exception as e:
+        logger.error(f"API Cancel Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/order/gtt")
+async def place_gtt(order: GTTRequest):
+    """Place a GTT order"""
+    try:
+        from main import active_engine
+        if not active_engine:
+            return {"status": "error", "message": "Trading Engine not ready"}
+        return active_engine.place_gtt_order(
+            symbol=order.symbol.upper(),
+            side=order.side.upper(),
+            qty=order.qty,
+            trigger_price=order.trigger_price,
+            product_type=order.product_type
+        )
+    except Exception as e:
+        logger.error(f"API GTT Error: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/panic")

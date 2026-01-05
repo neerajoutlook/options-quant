@@ -71,6 +71,13 @@ class ShoonyaSession:
                 raise RuntimeError(f"Shoonya login failed: {ret}")
                 
             logger.info(f"✅ Shoonya login successful for {user}")
+            
+            # Log enabled exchanges and products
+            exchanges = ret.get('exarr', [])
+            logger.info(f"📊 Enabled Exchanges: {exchanges}")
+            if 'NFO' not in exchanges:
+                logger.warning("⚠️ NFO (Options) not enabled in this Shoonya session!")
+            
             return ret
             
         except Exception as e:
@@ -195,6 +202,72 @@ class ShoonyaSession:
         except Exception as e:
             logger.error(f"❌ Order placement exception: {e}")
             logger.exception("Full traceback:")
+            return None
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel an existing order."""
+        try:
+            logger.info(f"Cancelling Order: {order_id}")
+            ret = self.api.cancel_order(orderno=order_id)
+            logger.info(f"API Response: {ret}")
+            return ret and ret.get('stat') == 'Ok'
+        except Exception as e:
+            logger.error(f"❌ Order cancellation exception: {e}")
+            return False
+
+    def get_order_book(self) -> List[Dict]:
+        """Fetch the current order book."""
+        try:
+            ret = self.api.get_order_book()
+            if isinstance(ret, list):
+                return ret
+            return []
+        except Exception as e:
+            logger.error(f"❌ Error fetching order book: {e}")
+            return []
+
+    def place_gtt_order(self, 
+                       tradingsymbol: str, 
+                       exchange: str, 
+                       alert_type: str, 
+                       trigger_price: float, 
+                       buy_or_sell: str, 
+                       product_type: str, 
+                       quantity: int, 
+                       price_type: str, 
+                       price: float, 
+                       remarks: str = None) -> Optional[str]:
+        """
+        Place a GTT (Good Till Triggered) order.
+        alert_type: 'LTP_ABOVE' or 'LTP_BELOW' (standardizing for the wrapper)
+        """
+        try:
+            # Shoonya Alert Types (from docs/community):
+            # LTP_AO (Above), LTP_BO (Below)
+            ait = 'LTP_AO' if 'ABOVE' in alert_type.upper() else 'LTP_BO'
+            
+            logger.info(f"Placing GTT Order: {buy_or_sell} {quantity} {tradingsymbol} Trigger: {trigger_price} ({ait})")
+            
+            ret = self.api.place_gtt_order(tradingsymbol=tradingsymbol,
+                                         exchange=exchange,
+                                         alert_type=ait,
+                                         compare_value=trigger_price,
+                                         buy_or_sell=buy_or_sell,
+                                         product_type=product_type,
+                                         quantity=quantity,
+                                         price_type=price_type,
+                                         price=price,
+                                         remarks=remarks)
+            
+            logger.info(f"GTT API Response: {ret}")
+            
+            if ret and ret.get('stat') == 'Ok':
+                al_id = ret.get('al_id')
+                logger.info(f"✅ GTT Order placed successfully. Alert ID: {al_id}")
+                return al_id
+            return None
+        except Exception as e:
+            logger.error(f"❌ GTT placement exception: {e}")
             return None
 
     def get_historical_data(self, exchange: str, token: str, start_time: float = None, end_time: float = None, interval: str = '1') -> Optional[List[Dict]]:

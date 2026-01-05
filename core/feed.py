@@ -38,12 +38,14 @@ class TickEngine:
         self.strategy = Strategy(
             self.weightage_calc,
             min_strength=config.MIN_SIGNAL_STRENGTH,
-            min_hold_time=config.MIN_SIGNAL_HOLD_TIME
+            min_hold_time=config.MIN_SIGNAL_HOLD_TIME,
+            min_confirmation=config.MIN_SIGNAL_CONFIRMATION
         )
         
         # OMS Initialization
         self.position_manager = PositionManager()
         self.order_manager = OrderManager(self.shoonya, self.position_manager)
+        self.auto_trading_enabled = False # Toggle via API
         
         self.paper_trading = PaperTradingEngine()
         
@@ -56,6 +58,8 @@ class TickEngine:
         self.vwap_map = {} # Symbol -> {cum_vol, cum_pv, last_vol}
         self.tracked_stocks = set() # Set of underlying symbols to track for ATMs
         self.macro_data = {} # Symbol -> {trend, rsi, message}
+        self.prev_close_map = {} # Symbol -> Prev Day Close
+        self.price_history = []  # For momentum tracking
         
         # Order tracking
         self.current_order_id: str = None
@@ -64,6 +68,25 @@ class TickEngine:
         
         self.running = False
         self.offline = False  # Offline mode flag
+        self.order_history = [] 
+        try:
+            from core.database import db
+            self.db = db
+            self.order_history = self.db.get_recent_orders(limit=50)
+            
+            # Load states from DB
+            db_auto = self.db.get_state("auto_trading_enabled")
+            if db_auto is not None:
+                self.auto_trading_enabled = (db_auto == "True")
+                
+            db_paper = self.db.get_state("paper_trading_mode")
+            if db_paper is not None:
+                config.PAPER_TRADING_MODE = (db_paper == "True")
+                
+            logger.info(f"💾 TickEngine loaded history (Auto: {self.auto_trading_enabled}, Paper: {config.PAPER_TRADING_MODE}).")
+        except Exception as e:
+            logger.error(f"Failed to initialize TickEngine DB: {e}")
+            self.db = None
 
 
     def initialize(self):
@@ -239,29 +262,54 @@ class TickEngine:
                  self.vwap_map[symbol]['cum_pv'] += (price * vol_delta)
                  self.vwap_map[symbol]['last_vol'] = current_vol
         
-        # Calculate VWAP
-        vwap = price # Default to current price if no volume
-        if self.vwap_map[symbol]['cum_vol'] > 0:
-             vwap = self.vwap_map[symbol]['cum_pv'] / self.vwap_map[symbol]['cum_vol']
-
-        # Determine Trend
+        # 1. Resolve Benchmark (Prev Close)
+        prev_close = self.prev_close_map.get(symbol, 0.0)
+        if prev_close == 0:
+            if 'pc' in tick:
+                prev_close = float(tick.get('pc', 0))
+            elif 'c' in tick and 'lp' in tick:
+                # Deduce pc from change: pc = lp - change
+                prev_close = float(tick['lp']) - float(tick['c'])
+        
+        # 2. Calculate Intraday Trend
         trend = "NEUTRAL"
-        if price > vwap:
-             trend = "BULLISH"
-        elif price < vwap:
-             trend = "BEARISH"
+        if current_vol > 0:
+            # Stocks with volume use VWAP for trend
+            vwap = self.vwap_map[symbol]['cum_pv'] / self.vwap_map[symbol]['cum_vol']
+            if price > vwap: trend = "BULLISH"
+            elif price < vwap: trend = "BEARISH"
+        else:
+            # Indices/Low-Volume use Price vs Benchmark
+            if prev_close > 0:
+                if price > prev_close: trend = "BULLISH"
+                elif price < prev_close: trend = "BEARISH"
+        
+        # 3. Calculate VWAP for payload
+        vwap = price
+        if current_vol > 0 or self.vwap_map[symbol]['cum_vol'] > 0:
+             vwap = self.vwap_map[symbol]['cum_pv'] / self.vwap_map[symbol]['cum_vol']
 
         # --- WEB DASHBOARD UPDATE ---
         try:
             # Import here to avoid circular dependencies if any
             from core.market_data import market_data
             
-            # Prepare data payload
+            # 4. Calculate Change and Percent Change
             change = 0.0
-            if 'c' in tick:
+            percent_change = 0.0
+            
+            if prev_close > 0:
+                change = price - prev_close
+                percent_change = (change / prev_close) * 100
+            elif 'c' in tick:
+                # Absolute change from Shoonya
                 change = float(tick['c'])
-            elif 'o' in tick:
-                change = price - float(tick['o'])
+                percent_change = (change / price * 100) if price > 0 else 0.0
+            
+            # Sanity check for bad data
+            if abs(percent_change) > 1000:
+                percent_change = 0.0
+                change = 0.0
                 
             payload = {
                 'symbol': symbol,
@@ -271,11 +319,11 @@ class TickEngine:
                 'high': float(tick.get('h', 0)),
                 'low': float(tick.get('l', 0)),
                 'change': change,
-                'vwap': vwap,
-                'change': change,
+                'percent_change': percent_change,
                 'vwap': vwap,
                 'trend': trend,
                 'macro': self.macro_data.get(symbol, {}),
+                'ai_signal': self._calculate_ai_signal(symbol, price, percent_change, vwap) if symbol == 'BANKNIFTY' else None,
                 'timestamp': datetime.now().isoformat()
             }
             
@@ -314,8 +362,20 @@ class TickEngine:
             # Calculate weighted strength
             strength = self.weightage_calc.calculate_weighted_strength()
             
-            # Run Strategy
-            signal = self.strategy.on_tick(price, timestamp.timestamp())
+            # Get Macro Trend for Bank Nifty
+            macro = self.macro_data.get("BANKNIFTY", {}).get('trend', "NEUTRAL")
+
+            # Run Strategy (Updated with multi-factor scoring)
+            signal = self.strategy.on_tick(price, timestamp.timestamp(), vwap=vwap, macro_trend=macro)
+            
+            # Automation: Check for Trailing SL Breaches
+            if self.auto_trading_enabled:
+                # Check for TSL breaches in active positions
+                for (sym, prd), pos in list(self.position_manager.positions.items()):
+                    if pos["net_qty"] != 0 and self.position_manager.check_tsl_breach(sym, prd):
+                        logger.warning(f"AUTO-TSL: Breach detected for {sym}. Triggering EXIT.")
+                        tsl_signal = Signal("EXIT", sym, price, "Trailing Stop Loss Breach", timestamp.timestamp())
+                        self.execute_signal(tsl_signal)
             
             if signal:
                 logger.info(f"SIGNAL GENERATED: {signal}")
@@ -368,7 +428,7 @@ class TickEngine:
             logger.info(f"🔎 Lookup options for {symbol} {strike}")
             
             # Use new local lookup
-            options = self.instrument_mgr.get_atm_option_tokens(symbol, strike)
+            options = self.instrument_mgr.get_atm_option_tokens(symbol, strike, api=self.shoonya)
             
             if options:
                 # Subscribe CE
@@ -452,17 +512,49 @@ class TickEngine:
                          self.vwap_map[symbol] = {'cum_vol': 0, 'cum_pv': 0, 'last_vol': cum_vol}
                     
                     if cum_vol > 0:
-                        self.vwap_map[symbol]['cum_vol'] = cum_vol
-                        self.vwap_map[symbol]['cum_pv'] = cum_pv
+                         self.vwap_map[symbol]['cum_vol'] = cum_vol
+                         self.vwap_map[symbol]['cum_pv'] = cum_pv
+                     
+                    # Identify Day Open (First candle of today)
+                    day_open_price = 0.0
+                    for candle in history:
+                        try:
+                            c_time = datetime.strptime(candle.get('time', ''), "%d-%m-%Y %H:%M:%S").replace(tzinfo=IST)
+                            if c_time >= start_of_day:
+                                day_open_price = float(candle.get('into', 0))
+                                break
+                        except: continue
+                    
+                    if day_open_price > 0:
+                         self.weightage_calc.set_open_price(symbol, day_open_price)
+
                     
                     # --- POPULATE INITIAL UI DATA (Use LAST available candle) ---
                     if history:
                         last_candle = history[-1] # Get last available candle (even if yesterday)
                         close_price = float(last_candle.get('intc', 0))
                         
+                        # Identify Previous Close (Last candle that is NOT from today)
+                        prev_day_candle = None
+                        for candle in reversed(history):
+                             try:
+                                 c_time = datetime.strptime(candle.get('time', ''), "%d-%m-%Y %H:%M:%S").replace(tzinfo=IST)
+                                 if c_time < start_of_day:
+                                     prev_day_candle = candle
+                                     break
+                             except: continue
+                        
+                        if prev_day_candle:
+                            self.prev_close_map[symbol] = float(prev_day_candle.get('intc', 0))
+                            logger.info(f"SET PREV CLOSE {symbol}: {self.prev_close_map[symbol]}")
+                        
                         logger.info(f"DEBUG: Seeding {symbol} with close_price={close_price}")
 
                         # Fake payload to initialize UI
+                        cur_prev_close = self.prev_close_map.get(symbol, close_price)
+                        cur_change = close_price - cur_prev_close
+                        cur_pct = (cur_change / cur_prev_close * 100) if cur_prev_close > 0 else 0.0
+
                         payload = {
                             'symbol': symbol,
                             'ltp': close_price,
@@ -470,10 +562,12 @@ class TickEngine:
                             'open': float(last_candle.get('into', 0)),
                             'high': float(last_candle.get('inth', 0)),
                             'low': float(last_candle.get('intl', 0)),
-                            'change': 0.0, 
+                            'change': cur_change,
+                            'percent_change': cur_pct,
                             'vwap': close_price,
                             'trend': 'NEUTRAL',
                             'macro': {},
+                            'ai_signal': 'NEUTRAL', # Default for seed
                             'timestamp': datetime.now(IST).isoformat()
                         }
                         
@@ -507,84 +601,288 @@ class TickEngine:
                 'vwap': 51500.0,
                 'trend': 'NEUTRAL',
                 'macro': {},
+                'ai_signal': 'OFFLINE (NEUTRAL)',
                 'timestamp': datetime.now(IST).isoformat()
             }
 
     def _update_macro_data(self):
-        """Fetch 30-day hourly history for macro trend analysis."""
-        logger.info("🌊 Fetching Macro Data (30-Day Hourly)...")
-        try:
-            now = datetime.now(IST)
-            start_time = now - timedelta(days=30)
-            
-            for symbol in self.tracked_stocks:
-                token = self.token_map.get(symbol)
-                if not token: continue
+        """Fetch 30-day hourly history for macro trend analysis. Loops every hour."""
+        while self.running:
+            logger.info("🌊 Fetching Macro Data (30-Day Hourly Refresh)...")
+            try:
+                now = datetime.now(IST)
+                start_time = now - timedelta(days=30)
                 
-                # Fetch hourly (interval=60)
-                # Shoonya usually returns dicts in list
-                history = self.shoonya.get_history(exchange="NSE", token=token, 
-                                                 start_time=start_time.timestamp(), 
-                                                 interval="60")
-                
-                if history and isinstance(history, list):
-                     # Convert to DataFrame for TechnicalIndicator
-                     df = pd.DataFrame(history)
-                     # Needs 'close' column
-                     df['close'] = pd.to_numeric(df['intc'])
-                     # Optional: Needs 'timestamp' if we care about sort, usually sorted or sort by 'time'
-                     
-                     indicators = TechnicalIndicators.calculate_macro_trend(df)
-                     self.macro_data[symbol] = indicators
-                     logger.info(f"MACRO {symbol}: {indicators}")
-                     
-                     # Throttle slightly
-                     time.sleep(0.5)
-                else:
-                    logger.warning(f"No macro history for {symbol}")
+                for symbol in self.tracked_stocks:
+                    token = self.token_map.get(symbol)
+                    if not token: continue
                     
-        except Exception as e:
-             logger.error(f"Macro Data Error: {e}")
+                    # Fetch hourly (interval=60)
+                    history = self.shoonya.get_history(exchange="NSE", token=token, 
+                                                     start_time=start_time.timestamp(), 
+                                                     interval="60")
+                    
+                    if history and isinstance(history, list):
+                         df = pd.DataFrame(history)
+                         df['close'] = pd.to_numeric(df['intc'])
+                         
+                         indicators = TechnicalIndicators.calculate_macro_trend(df)
+                         self.macro_data[symbol] = indicators
+                         logger.debug(f"MACRO {symbol} REFRESHED: {indicators}")
+                         
+                         time.sleep(0.5) # Throttling API calls
+                    else:
+                        logger.warning(f"No macro history for {symbol}")
+                        
+            except Exception as e:
+                 logger.error(f"Macro Data Loop Error: {e}")
+            
+            # Wait 1 hour before next refresh
+            for _ in range(3600):
+                if not self.running: break
+                time.sleep(1)
 
     def on_order_update(self, data):
         """Handle order updates from WebSocket"""
         logger.info(f"Order Update: {data}")
         
         # Log to orders file
-        order_id = data.get('norenordno', 'N/A')
+        order_id = data.get('norenordno') or data.get('al_id') or 'N/A'
         symbol = data.get('tsym', 'N/A')
         status = data.get('status', 'N/A')
+        product = data.get('prd', 'I') # MIS by default
         rejection_reason = data.get('rejreason', '')
+        
+        # Extract fill price and qty if available
+        fill_price = float(data.get('avg_prc', 0)) if data.get('avg_prc') else 0.0
+        fill_qty = int(data.get('fillqty', 0)) if data.get('fillqty') else 0
+        side = data.get('trantype', 'BUY') # BUY/SELL
         
         additional_info = f"Rejection: {rejection_reason}" if rejection_reason and rejection_reason.strip() else ""
         log_order_update(order_id, symbol, status, additional_info)
         
-        self.telegram.send_message(f"📊 Order Update: {data.get('status', 'N/A')}")
+        # Trigger Position Update on Full Fill
+        if status == 'COMPLETE' and fill_qty > 0:
+            if hasattr(self, 'position_manager'):
+                self.position_manager.on_fill(symbol, fill_qty, fill_price, side, product)
         
-    def place_manual_order(self, symbol: str, side: str, qty: int, price: float = 0.0):
+        # Update existing order in history if found, else insert
+        found = False
+        for order in self.order_history:
+            if order['id'] == order_id:
+                order.update({
+                    'status': status,
+                    'reason': rejection_reason,
+                    'price': fill_price if fill_price > 0 else order.get('price', 0),
+                    'timestamp': datetime.now().isoformat()
+                })
+                if fill_qty > 0: order['qty'] = fill_qty
+                
+                # Update DB
+                if self.db: self.db.save_order(order)
+                found = True
+                break
+        
+        if not found:
+            # Buffer for sidebar
+            order_data = {
+                'id': order_id,
+                'symbol': symbol,
+                'status': status,
+                'reason': rejection_reason,
+                'price': fill_price,
+                'qty': fill_qty,
+                'timestamp': datetime.now().isoformat()
+            }
+            self.order_history.insert(0, order_data)
+            if self.db: self.db.save_order(order_data)
+            if len(self.order_history) > 50: self.order_history.pop()
+
+        self.telegram.send_message(f"📊 Order Update: {status} ({symbol})")
+        
+    def place_manual_order(self, symbol: str, side: str, qty: int, price: float = 0.0, product_type: str = 'I'):
         """
         Handle Manual Order from UI
+        product_type: 'I' (MIS), 'M' (NRML), 'C' (CNC)
         """
-        logger.info(f"Manual Order Request: {side} {qty} {symbol} @ {price}")
+        logger.info(f"Manual Order Request: {side} {qty} {symbol} @ {price} ({product_type})")
+
+        # --- OFFLINE/PAPER MODE ---
+        if self.offline:
+            return self._simulate_manual_order(symbol, side, qty, price, reason="OFFLINE")
+            
+        if config.PAPER_TRADING_MODE:
+            return self._simulate_manual_order(symbol, side, qty, price, reason="PAPER_MODE")
+        # ---------------------------
         
         # Delegate to OMS
-        order_id = self.order_manager.place_order(symbol, side, qty, "MANUAL")
+        order_id = self.order_manager.place_order(symbol, side, qty, product_type=product_type, tag="MANUAL")
         
         if order_id:
-            msg = f"✅ Manual Order Placed: {side} {qty} {symbol} (ID: {order_id})"
-            # self.send_telegram(msg) # Optional
-            
-            # Temporary: Updating Position Manager directly for UI feedback (Simulated Fill)
-            # In real system, this happens on socket callback
+            # ... (success logic)
             ltp = market_data.latest_prices.get(symbol, {}).get('ltp', 0.0)
-            if ltp > 0:
-                 self.position_manager.on_fill(symbol, qty, ltp, side)
-            
+            order_data = {
+                'id': order_id,
+                'symbol': symbol,
+                'side': side,
+                'qty': qty,
+                'price': ltp,
+                'status': 'PLACED',
+                'timestamp': datetime.now().isoformat()
+            }
+            self.order_history.insert(0, order_data)
+            if self.db:
+                self.db.save_order(order_data)
+            if len(self.order_history) > 50: self.order_history.pop()
             return {"status": "success", "order_id": order_id}
         else:
-            return {"status": "error", "message": "Order Placement Failed"}
+            logger.warning(f"OMS Order Failed for {symbol}. Falling back to Simulation.")
+            return self._simulate_manual_order(symbol, side, qty, price, reason="FAILED")
+
+    def cancel_order(self, order_id: str):
+        """Cancel an order"""
+        if self.offline or config.PAPER_TRADING_MODE:
+            # Simple simulation: mark in history as cancelled
+            for order in self.order_history:
+                if order['id'] == order_id:
+                    order['status'] = 'CANCELLED'
+                    if self.db: self.db.save_order(order)
+                    break
+            return {"status": "success", "order_id": order_id}
+            
+        success = self.order_manager.cancel_order(order_id)
+        return {"status": "success" if success else "error"}
+
+    def place_gtt_order(self, symbol: str, side: str, qty: int, trigger_price: float, product_type: str = 'I'):
+        """Place a GTT order"""
+        if self.offline or config.PAPER_TRADING_MODE:
+            # Simulate GTT placement
+            gtt_id = f"GTT-SIM-{int(time.time())}"
+            order_data = {
+                'id': gtt_id,
+                'symbol': symbol,
+                'side': side,
+                'qty': qty,
+                'price': trigger_price,
+                'status': 'GTT_PLACED',
+                'timestamp': datetime.now().isoformat()
+            }
+            self.order_history.insert(0, order_data)
+            if self.db: self.db.save_order(order_data)
+            return {"status": "success", "gtt_id": gtt_id}
+
+        gtt_id = self.order_manager.place_gtt_order(symbol, side, qty, trigger_price, product_type)
+        if gtt_id:
+            order_data = {
+                'id': gtt_id,
+                'symbol': symbol,
+                'side': side,
+                'qty': qty,
+                'price': trigger_price,
+                'status': 'GTT_PLACED',
+                'timestamp': datetime.now().isoformat()
+            }
+            self.order_history.insert(0, order_data)
+            if self.db: self.db.save_order(order_data)
+            return {"status": "success", "gtt_id": gtt_id}
+        return {"status": "error"}
+
+    def _simulate_manual_order(self, symbol: str, side: str, qty: int, price: float = 0.0, reason: str = "SIM"):
+        """Helper to simulate an offline order"""
+        logger.warning(f"Simulation Mode ({reason}): {side} {qty} {symbol}")
+        order_id = f"SIM-{int(time.time())}"
+        
+        # Simulate Fill
+        ltp = market_data.latest_prices.get(symbol, {}).get('ltp', 0.0)
+        fill_price = price if price > 0 else ltp
+        if fill_price == 0: fill_price = 100.0 # Fallback default
+
+        self.position_manager.on_fill(symbol, qty, fill_price, side)
+        
+        # Log to history
+        order_data = {
+            'id': order_id,
+            'symbol': symbol,
+            'side': side,
+            'qty': qty,
+            'price': fill_price,
+            'status': f'FILLED ({reason})',
+            'timestamp': datetime.now().isoformat()
+        }
+        self.order_history.insert(0, order_data)
+        if self.db:
+            self.db.save_order(order_data)
+            
+        if len(self.order_history) > 50: self.order_history.pop()
+
+        return {"status": "success", "order_id": order_id}
             
                 
+
+    def _calculate_ai_signal(self, symbol: str, price: float, pct_change: float, vwap: float) -> str:
+        """
+        Generate a consolidated AI Signal/Suggestion for the dashboard.
+        Combines: Intraday Move, Macro (30D), Weighted Strength, and Momentum.
+        """
+        signal = "NEUTRAL"
+        
+        # 1. Get Weighted Strength (Constituents)
+        strength = self.weightage_calc.calculate_weighted_strength()
+        
+        # 2. Get Macro Trend
+        macro = self.macro_data.get(symbol, {}).get('trend', 'NEUTRAL')
+        if isinstance(macro, list): macro = macro[0]
+        
+        # 3. Get Momentum (Relative to 2 mins ago)
+        timestamp = datetime.now().timestamp()
+        
+        # We reuse the same history buffer if possible or maintain one here
+        # For dashboard simplicity, we'll store on the class
+        self.price_history.append((timestamp, price))
+        while self.price_history and timestamp - self.price_history[0][0] > 600:
+            self.price_history.pop(0)
+            
+        mom_score = 0.0
+        if len(self.price_history) >= 2:
+            lookback_time = timestamp - 120
+            old_price = self.price_history[0][1]
+            for t, p in reversed(self.price_history):
+                if t <= lookback_time:
+                    old_price = p
+                    break
+            change = price - old_price
+            if change >= 60: mom_score = 1.5
+            elif change >= 30: mom_score = 0.5
+            elif change <= -60: mom_score = -1.5
+            elif change <= -30: mom_score = -0.5
+            
+        score = 0
+        
+        # Factor A: Intraday Level (Relative to VWAP/Benchmark)
+        if vwap > 0:
+            if price > vwap: score += 1.0
+            elif price < vwap: score -= 1.0
+        
+        # Factor B: Macro context
+        if macro == "BULLISH": score += 1.0 
+        elif macro == "BEARISH": score -= 1.0
+        
+        # Factor C: Constituent Strength
+        if strength > 20: score += 1.5    
+        elif strength > 10: score += 0.5  
+        elif strength < -20: score -= 1.5
+        elif strength < -10: score -= 0.5
+        
+        # Factor D: Momentum (The "Turnaround" factor)
+        score += mom_score
+        
+        # Determine Final Signal
+        if score >= 2.5: signal = "STRONG BUY 🚀"
+        elif score >= 1.0: signal = "BUY 🟢"
+        elif score <= -2.5: signal = "STRONG SELL 🩸"
+        elif score <= -1.0: signal = "SELL 🔴"
+        
+        return signal
 
     def execute_signal(self, signal):
         """Execute the signal by placing an order for Bank Nifty options."""
@@ -686,7 +984,12 @@ class TickEngine:
         
         # Determine action
         action = "S" if signal.type == "EXIT" else "B"
-        qty = config.QUANTITY
+        
+        # Get real lot size for quantity calculation
+        lot_size = self.instrument_mgr.get_lot_size("BANKNIFTY")
+        qty = config.QUANTITY * lot_size
+        
+        logger.info(f"Execution Qty: Lots={config.QUANTITY}, LotSize={lot_size}, Total={qty}")
         
         # Log order attempt
         log_order_attempt(action, symbol, qty, strike)

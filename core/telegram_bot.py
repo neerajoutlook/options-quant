@@ -17,6 +17,11 @@ class TelegramBot:
 
     def send_message(self, message: str) -> bool:
         """Send a text message to the configured chat ID."""
+        from core.config import TELEGRAM_MODE
+        if not TELEGRAM_MODE:
+            logger.info("ℹ️ Telegram Message suppressed (TELEGRAM_MODE=OFF)")
+            return True # Not an error, just suppressed
+
         if not self.token or not self.chat_id:
             return False
             

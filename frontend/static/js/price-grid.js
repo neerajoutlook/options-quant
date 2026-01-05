@@ -28,14 +28,164 @@ class PriceGrid {
         // Positions and Orders
         this.positions = {};
         this.totalPnlElement = document.getElementById('total-pnl');
+        this.ordersLog = document.getElementById('orders-log');
+        this.positionsTableBody = document.getElementById('positions-table-body');
+        this.orderCountBadge = document.getElementById('order-count');
+
+        // Column Lists
+        this.bearsList = document.getElementById('bears-list');
+        this.bullsList = document.getElementById('bulls-list');
+
         this.startPositionSync();
+        this.startOrderSync();
 
         // Config
         this.lotSizes = { 'BANKNIFTY': 15, 'NIFTY': 50 }; // Defaults
         this.loadConfig();
 
+        // Trading Mode
+        this.paperMode = true;
+        this.autoTradeEnabled = false;
+        this.modeToggle = document.getElementById('mode-toggle');
+        this.modeStatus = document.getElementById('mode-status');
+        this.autoTradeToggle = document.getElementById('auto-trade-toggle');
+        this.autoTradeStatus = document.getElementById('auto-trade-status');
+        this.aiSignalBadge = document.getElementById('ai-signal');
+        this.globalModeBadge = document.getElementById('global-mode-badge');
+        this.productTypeEl = document.getElementById('product-type');
+
+        this.initModeToggle();
+        this.initAutoTradeToggle();
+
+        // History Controls
+        this.historyDateInput = document.getElementById('history-date');
+        this.btnClearHistory = document.getElementById('btn-clear-history');
+
+        // Start Sorting interval
+        setInterval(() => this.sortColumns(), 3000);
+
+        if (this.historyDateInput) {
+            this.historyDateInput.value = new Date().toISOString().split('T')[0];
+            this.initHistoryControls();
+        }
+
         // Start FPS counter
         this.startFpsCounter();
+    }
+
+    async initModeToggle() {
+        if (!this.modeToggle) return;
+
+        // Fetch initial mode
+        try {
+            const res = await fetch('/api/mode');
+            const data = await res.json();
+            this.setPaperMode(data.paper_trading_mode);
+        } catch (e) { console.error('Mode Fetch Error', e); }
+
+        // Handle toggle change
+        // Handle toggle change
+        this.modeToggle.addEventListener('change', async () => {
+            const isChecked = this.modeToggle.checked;
+            const newPaperMode = !isChecked; // Checked = REAL (paper=false), Unchecked = PAPER (paper=true)
+
+            // Safety confirmation for Real mode
+            if (isChecked && !confirm("⚠️ SWITCH TO REAL TRADING?\n\nThis will place REAL orders at Shoonya.")) {
+                this.modeToggle.checked = false; // Revert to Paper
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/mode?paper_mode=${newPaperMode}`, { method: 'POST' });
+                const data = await res.json();
+                this.setPaperMode(data.paper_trading_mode);
+            } catch (e) {
+                console.error('Mode Update Error', e);
+                alert('Failed to update trading mode');
+            }
+        });
+    }
+
+    setPaperMode(isPaper) {
+        this.paperMode = isPaper;
+        if (this.modeToggle) this.modeToggle.checked = !isPaper; // Checked = REAL
+        if (this.modeStatus) {
+            this.modeStatus.textContent = isPaper ? 'Paper' : 'REAL';
+            this.modeStatus.className = 'mode-status ' + (isPaper ? 'paper' : 'real');
+        }
+        if (this.globalModeBadge) {
+            this.globalModeBadge.textContent = isPaper ? 'PAPER' : 'REAL';
+            this.globalModeBadge.className = 'mode-badge ' + (isPaper ? 'paper' : 'real');
+        }
+    }
+
+    async initAutoTradeToggle() {
+        if (!this.autoTradeToggle) return;
+
+        // Fetch initial state
+        try {
+            const res = await fetch('/api/auto_trade');
+            const data = await res.json();
+            this.setAutoTrade(data.auto_trading_enabled);
+        } catch (e) { console.error('Failed to fetch auto-trade status', e); }
+
+        this.autoTradeToggle.addEventListener('change', async (e) => {
+            const enabled = e.target.checked;
+            try {
+                const res = await fetch(`/api/auto_trade?enabled=${enabled}`, { method: 'POST' });
+                const data = await res.json();
+                this.setAutoTrade(data.auto_trading_enabled);
+            } catch (err) {
+                console.error('Failed to set auto-trade', err);
+                e.target.checked = !enabled; // Revert
+            }
+        });
+    }
+
+    setAutoTrade(enabled) {
+        this.autoTradeEnabled = enabled;
+        if (this.autoTradeToggle) this.autoTradeToggle.checked = enabled;
+        if (this.autoTradeStatus) {
+            this.autoTradeStatus.textContent = enabled ? 'ON' : 'OFF';
+            this.autoTradeStatus.className = 'mode-status ' + (enabled ? 'enabled' : 'disabled');
+        }
+    }
+
+    initHistoryControls() {
+        if (this.historyDateInput) {
+            this.historyDateInput.addEventListener('change', () => {
+                this.fetchOrders(this.historyDateInput.value);
+            });
+        }
+        if (this.btnClearHistory) {
+            this.btnClearHistory.addEventListener('click', () => {
+                this.clearHistory(this.historyDateInput.value);
+            });
+        }
+    }
+
+    async fetchOrders(date) {
+        try {
+            const res = await fetch(`/api/orders?date=${date}`);
+            const data = await res.json();
+            if (data.orders) {
+                this.renderOrders(data.orders);
+            }
+        } catch (e) { console.error('Failed to fetch historical orders', e); }
+    }
+
+    async clearHistory(date) {
+        if (!confirm(`Clear all history for ${date}? This cannot be undone.`)) return;
+        try {
+            const res = await fetch(`/api/orders/clear?date=${date}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') {
+                alert(data.message);
+                this.fetchOrders(date); // Refresh UI
+            } else {
+                alert('Clear failed: ' + data.message);
+            }
+        } catch (e) { alert('Clear failed: ' + e); }
     }
 
     startPositionSync() {
@@ -47,10 +197,11 @@ class PriceGrid {
                 const data = await response.json();
                 if (data.positions) {
                     this.positions = data.positions;
-                    this.updateTotalPnl(data.total_pnl);
+                    this.updateTotalPnl(data.total_pnl || 0);
+                    this.renderPositions(data.positions);
 
                     // Toggle Panic Button
-                    const hasPositions = Object.keys(this.positions).length > 0;
+                    const hasPositions = Object.values(this.positions).some(p => p.net_qty !== 0);
                     if (this.panicBtn) {
                         this.panicBtn.disabled = !hasPositions;
                         this.panicBtn.style.opacity = hasPositions ? '1' : '0.5';
@@ -59,6 +210,85 @@ class PriceGrid {
                 }
             } catch (e) { console.error('Pos Sync Error', e); }
         }, 1000); // 1 sec sync
+    }
+
+    renderPositions(positions) {
+        if (!this.positionsTableBody) return;
+
+        const keys = Object.keys(positions);
+        const filteredKeys = keys.filter(k => positions[k].net_qty !== 0);
+
+        if (filteredKeys.length === 0) {
+            this.positionsTableBody.innerHTML = '<tr><td colspan="7" class="empty-table">No active trades</td></tr>';
+            return;
+        }
+
+        this.positionsTableBody.innerHTML = filteredKeys.map(key => {
+            const pos = positions[key];
+            const [symbol, product] = key.split(':');
+            const side = pos.net_qty > 0 ? 'BUY' : 'SELL';
+            const sideClass = pos.net_qty > 0 ? 'side-buy' : 'side-sell';
+            const pnlClass = pos.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+            const ltp = pos.ltp || pos.avg_price;
+
+            return `
+                <tr>
+                    <td>${pos.entry_time || '<span style="opacity:0.3">Live</span>'}</td>
+                    <td><strong>${symbol}</strong></td>
+                    <td><span class="side-badge ${sideClass}">${side}</span></td>
+                    <td>${Math.abs(pos.net_qty)}</td>
+                    <td>${this.formatPrice(pos.avg_price)}</td>
+                    <td>${this.formatPrice(ltp)}</td>
+                    <td class="${pnlClass}">${pos.unrealized_pnl >= 0 ? '+' : ''}${Math.round(pos.unrealized_pnl)}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    startOrderSync() {
+        setInterval(async () => {
+            // Only sync if viewing today's date
+            const today = new Date().toISOString().split('T')[0];
+            const viewingToday = !this.historyDateInput || this.historyDateInput.value === today;
+            if (!viewingToday) return;
+
+            try {
+                const res = await fetch('/api/orders');
+                const data = await res.json();
+                if (data.orders) {
+                    this.renderOrders(data.orders);
+                }
+            } catch (e) { console.error('Order Sync Error', e); }
+        }, 1500); // 1.5 sec sync
+    }
+
+    renderOrders(orders) {
+        if (!this.ordersLog) return;
+
+        if (orders.length === 0) {
+            this.ordersLog.innerHTML = '<div class="empty-log">No recent orders</div>';
+            return;
+        }
+
+        if (this.orderCountBadge) this.orderCountBadge.textContent = orders.length;
+
+        // Simple render (only if changed? for now just recreate as order count is low)
+        this.ordersLog.innerHTML = orders.map(order => {
+            const isCancellable = ['PLACED', 'PENDING', 'GTT_PLACED'].includes(order.status);
+            return `
+                <div class="order-item ${order.side?.toLowerCase() || ''}">
+                    <div>
+                        <span class="order-symbol">${order.symbol}</span>
+                        <span class="order-status text-xs">${order.status}</span>
+                        ${isCancellable ? `<button onclick="window.priceGrid.cancelOrder('${order.id}')" class="order-cancel-btn">Cancel</button>` : ''}
+                    </div>
+                    <div class="order-details">
+                        <span>${order.side || 'UPD'} ${order.qty || '-'} @ ${this.formatPrice(order.price || 0)}</span>
+                        <span class="text-xs text-gray-500">${new Date(order.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
     }
 
     updateTotalPnl(amount) {
@@ -81,33 +311,6 @@ class PriceGrid {
     }
 
 
-    async panicExit() {
-        if (!confirm("🔥 ARE YOU SURE? THIS WILL CLOSE ALL POSITIONS!")) return;
-        try {
-            await fetch('/api/panic', { method: 'POST' });
-            alert('Panic Exit Triggered!');
-        } catch (e) { alert('Panic Exit Failed: ' + e); }
-    }
-
-    async trade(symbol, side, qty) {
-        if (!confirm(`Confirm ${side} ${qty} ${symbol}?`)) return;
-
-        try {
-            const response = await fetch('/api/order', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbol, side, qty, price: 0 })
-            });
-            const res = await response.json();
-            if (res.status === 'success') {
-                alert(`Order Placed: ${res.order_id}`);
-            } else {
-                alert(`Error: ${res.message}`);
-            }
-        } catch (e) {
-            alert(`Network Error: ${e}`);
-        }
-    }
 
     updateCell(cell, content, className = null) {
         if (cell.textContent !== content) {
@@ -149,29 +352,26 @@ class PriceGrid {
     }
 
     loadSnapshot(data) {
-        this.gridContainer.innerHTML = '';
+        if (this.bearsList) this.bearsList.innerHTML = '';
+        if (this.bullsList) this.bullsList.innerHTML = '';
         this.widgets.clear();
         this.optionRows.clear();
 
         // 1. Identify Parents (Underlying)
         const parents = Object.keys(data).filter(s => !/\d/.test(s) && !s.includes('CE') && !s.includes('PE'));
 
-        // Sort parents alphabetically
-        parents.sort().forEach(symbol => {
-            this.createWidget(symbol, data[symbol]);
-        });
-
-        // 2. Process all symbols to populate widgets or tables
+        // Process all symbols
         Object.entries(data).forEach(([symbol, priceData]) => {
-            if (this.widgets.has(symbol)) {
-                this.updateWidgetHeader(symbol, priceData);
-                if (symbol === 'BANKNIFTY') this.updateHeroCard(priceData);
+            if (parents.includes(symbol)) {
+                if (!this.widgets.has(symbol)) {
+                    this.createWidget(symbol, priceData);
+                }
+                this.updatePrice(symbol, priceData);
             } else {
                 // It's an option, find parent
                 const match = symbol.match(/^([A-Z]+)/);
                 const parent = match ? match[1] : symbol;
 
-                // Special handling if parent widget exists
                 if (this.widgets.has(parent)) {
                     this.addOptionRow(parent, symbol, priceData);
                 }
@@ -181,15 +381,51 @@ class PriceGrid {
     }
 
     updatePrice(symbol, data) {
+        // Always update Hero Card for BANKNIFTY
+        if (symbol === 'BANKNIFTY') {
+            this.updateHeroCard(data);
+        }
+
         // If it's a parent widget
         if (this.widgets.has(symbol)) {
+            const widget = this.widgets.get(symbol);
             this.updateWidgetHeader(symbol, data);
-            if (symbol === 'BANKNIFTY') this.updateHeroCard(data);
+
+            // Dynamic column movement
+            const pct = data.percent_change || 0;
+            const targetColumn = pct >= 0 ? this.bullsList : this.bearsList;
+            if (widget.parentElement !== targetColumn && targetColumn) {
+                targetColumn.appendChild(widget);
+            }
+            widget.dataset.pct = pct; // For sorting
         }
         // If it's an option row
         else if (this.optionRows.has(symbol)) {
             this.updateOptionRow(symbol, data);
         }
+    }
+
+    sortColumns() {
+        [this.bullsList, this.bearsList].forEach(list => {
+            if (!list) return;
+            const items = Array.from(list.children);
+            if (items.length < 2) return;
+
+            items.sort((a, b) => {
+                const valA = parseFloat(a.dataset.pct || 0);
+                const valB = parseFloat(b.dataset.pct || 0);
+                // For bulls, descending. For bears, ascending (most bearish first)
+                if (list === this.bullsList) return valB - valA;
+                return valA - valB;
+            });
+
+            // Only append if order changed to save DOM cycles
+            items.forEach((item, index) => {
+                if (list.children[index] !== item) {
+                    list.appendChild(item);
+                }
+            });
+        });
     }
 
     createWidget(symbol, data) {
@@ -199,18 +435,22 @@ class PriceGrid {
 
         widget.innerHTML = `
             <div class="widget-header">
-                <div class="header-left">
-                    <div class="header-symbol">${symbol}</div>
-                    <div class="header-price">--</div>
-                    <div class="header-change">--</div>
-                    <div class="header-trend" style="font-size: 0.8rem; margin-left: 10px;">--</div>
+                <div class="header-main">
+                    <span class="header-symbol">${symbol}</span>
+                    <span class="header-trend">--</span>
                 </div>
-                <div class="actions-cell">
-                    <button onclick="window.priceGrid.trade('${symbol}', 'BUY', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-buy" title="Buy">B</button>
-                    <button onclick="window.priceGrid.trade('${symbol}', 'SELL', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-sell" title="Sell">S</button>
-                    <button onclick="window.priceGrid.trade('${symbol}', 'EXIT', 0)" class="btn-trade btn-exit" title="Close Position">X</button>
+                <div class="header-price-row">
+                    <span class="header-price">--</span>
+                    <span class="header-change">--</span>
                 </div>
             </div>
+            
+            <div class="widget-actions">
+                <button onclick="window.priceGrid.trade('${symbol}', 'BUY', window.priceGrid.getLotSize('${symbol}'))" class="btn-action btn-buy">BUY</button>
+                <button onclick="window.priceGrid.trade('${symbol}', 'SELL', window.priceGrid.getLotSize('${symbol}'))" class="btn-action btn-sell">SELL</button>
+                <button onclick="window.priceGrid.trade('${symbol}', 'EXIT', 0)" class="btn-action btn-exit">EXIT</button>
+            </div>
+
             <div class="widget-body">
                 <table class="mini-table">
                     <thead>
@@ -228,8 +468,8 @@ class PriceGrid {
             </div>
         `;
 
-        this.gridContainer.appendChild(widget);
         this.widgets.set(symbol, widget);
+        return widget;
     }
 
     updateWidgetHeader(symbol, data) {
@@ -239,15 +479,11 @@ class PriceGrid {
 
         const ltp = parseFloat(data.ltp || 0);
         const change = parseFloat(data.change || 0);
-        let changePercent = 0;
-        if (data.change !== 0) {
-            const prev = ltp - change;
-            if (Math.abs(prev) > 0.01) changePercent = (change / prev) * 100;
-        }
+        const changePercent = parseFloat(data.percent_change || 0);
 
         ltpEl.textContent = this.formatPrice(ltp);
         changeEl.textContent = `${this.formatChange(change)} (${Math.abs(changePercent).toFixed(2)}%)`;
-        changeEl.className = 'header-change ' + this.getChangeClass(change);
+        changeEl.className = 'header-change ' + this.getChangeClass(changePercent);
 
         // Update Trend/Macro
         const trendEl = widget.querySelector('.header-trend');
@@ -275,14 +511,14 @@ class PriceGrid {
 
         row.innerHTML = `
             <td>${displayName}</td>
-            <td class="opt-ltp">--</td>
-            <td class="opt-pct">--</td>
-            <td class="opt-vol">--</td>
-            <td class="opt-pnl font-mono">--</td>
-            <td class="text-right actions-cell flex gap-2 justify-end" style="padding: 4px;">
-                <button onclick="window.priceGrid.trade('${symbol}', 'BUY', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-buy" style="width:24px;height:24px;font-size:0.8rem">B</button>
-                <button onclick="window.priceGrid.trade('${symbol}', 'SELL', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-sell" style="width:24px;height:24px;font-size:0.8rem">S</button>
-                <button onclick="window.priceGrid.trade('${symbol}', 'EXIT', 0)" class="btn-trade btn-exit" style="width:24px;height:24px;font-size:0.8rem">X</button>
+            <td class="opt-ltp text-right">--</td>
+            <td class="opt-pct text-right">--</td>
+            <td class="opt-vol text-right">--</td>
+            <td class="opt-pnl text-right">--</td>
+            <td class="opt-actions">
+                <button onclick="window.priceGrid.trade('${symbol}', 'BUY', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-buy">B</button>
+                <button onclick="window.priceGrid.trade('${symbol}', 'SELL', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-sell">S</button>
+                <button onclick="window.priceGrid.trade('${symbol}', 'EXIT', 0)" class="btn-trade btn-exit">X</button>
             </td>
         `;
 
@@ -295,11 +531,7 @@ class PriceGrid {
         const row = this.optionRows.get(symbol);
         const ltp = parseFloat(data.ltp || 0);
         const change = parseFloat(data.change || 0);
-        let changePercent = 0;
-        if (data.change !== 0) {
-            const prev = ltp - change;
-            if (Math.abs(prev) > 0.01) changePercent = (change / prev) * 100;
-        }
+        const changePercent = parseFloat(data.percent_change || 0);
 
         // Update cells directly
         row.querySelector('.opt-ltp').textContent = this.formatPrice(ltp);
@@ -310,12 +542,21 @@ class PriceGrid {
 
         row.querySelector('.opt-vol').textContent = this.formatVolume(data.volume);
 
-        // P&L
-        const pos = this.positions[symbol] || {};
-        const pnl = pos.unrealized_pnl || 0;
+        // P&L (Sum across all product types for this symbol)
+        let totalPnl = 0;
+        let hasNetQty = false;
+
+        Object.keys(this.positions).forEach(key => {
+            if (key.startsWith(symbol + ':') || key === symbol) {
+                const pos = this.positions[key];
+                totalPnl += (pos.unrealized_pnl || 0);
+                if (pos.net_qty) hasNetQty = true;
+            }
+        });
+
         const pnlEl = row.querySelector('.opt-pnl');
-        pnlEl.textContent = pos.net_qty ? Math.round(pnl) : '-';
-        pnlEl.className = 'opt-pnl font-mono ' + (pnl >= 0 ? 'text-green-400' : 'text-red-400');
+        pnlEl.textContent = hasNetQty ? Math.round(totalPnl) : '-';
+        pnlEl.className = 'opt-pnl font-mono ' + (totalPnl >= 0 ? 'text-green-400' : 'text-red-400');
     }
 
     updateSymbolCount() {
@@ -355,23 +596,38 @@ class PriceGrid {
     }
 
     async trade(symbol, side, qty) {
-        if (!confirm(`Confirm ${side} ${qty} ${symbol}?`)) return;
+        if (!window.automation_test && !confirm(`Confirm ${side} ${qty} ${symbol}?`)) return;
+
+        const product_type = this.productTypeEl ? this.productTypeEl.value : 'I';
 
         try {
             const response = await fetch('/api/order', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbol, side, qty, price: 0 })
+                body: JSON.stringify({ symbol, side, qty, price: 0, product_type })
             });
             const res = await response.json();
             if (res.status === 'success') {
-                alert(`Order Placed: ${res.order_id}`);
+                alert(`Order Placed: ${res.order_id || res.id}`);
             } else {
-                alert(`Error: ${res.message} (Is Algo Running?)`);
+                alert(`Error: ${res.message || 'Check terminal'}`);
             }
         } catch (e) {
             alert(`Network Error: ${e}`);
         }
+    }
+
+    async cancelOrder(orderId) {
+        if (!confirm(`Cancel order ${orderId}?`)) return;
+        try {
+            const res = await fetch(`/api/order/cancel?order_id=${orderId}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') {
+                alert('Order Cancellation Sent');
+            } else {
+                alert('Cancellation Failed: ' + (data.message || 'Check logs'));
+            }
+        } catch (e) { alert('Network Error: ' + e); }
     }
 
     updateHeroCard(data) {
@@ -379,17 +635,23 @@ class PriceGrid {
 
         const ltp = parseFloat(data.ltp || 0);
         const change = parseFloat(data.change || 0);
-        let changePercent = 0;
-        if (data.change !== 0) {
-            const prev = ltp - change;
-            if (Math.abs(prev) > 0.01) changePercent = (change / prev) * 100;
-        }
+        const changePercent = parseFloat(data.percent_change || 0);
 
         this.bankniftyPrice.textContent = this.formatPrice(ltp);
         this.bankniftyChange.innerHTML = `
             <span class="change-value ${this.getChangeClass(change)}">${this.formatChange(change)}</span>
             <span class="change-percent ${this.getChangeClass(changePercent)}">(${Math.abs(changePercent).toFixed(2)}%)</span>
         `;
+
+        // AI Signal Update
+        const signalEl = document.getElementById('ai-signal');
+        if (signalEl && data.ai_signal) {
+            signalEl.textContent = `AI: ${data.ai_signal}`;
+            signalEl.classList.remove('hidden', 'ai-signal-buy', 'ai-signal-sell');
+
+            if (data.ai_signal.includes('BUY')) signalEl.classList.add('ai-signal-buy');
+            else if (data.ai_signal.includes('SELL')) signalEl.classList.add('ai-signal-sell');
+        }
 
         const now = new Date();
         if (this.lastUpdate) this.lastUpdate.textContent = now.toLocaleTimeString();

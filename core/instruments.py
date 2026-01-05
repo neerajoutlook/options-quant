@@ -18,15 +18,15 @@ STRIKE_STEPS = {
     "HDFCBANK": 10,
     "ICICIBANK": 10,
     "SBIN": 5,
-    "KOTAKBANK": 10,
+    "KOTAKBANK": 20, # Corrected from 10
     "AXISBANK": 10,
     "INDUSINDBK": 10,
-    "BANDHANBNK": 5, # or 2.5 under 200? usually 5
+    "BANDHANBNK": 5,
     "FEDERALBNK": 5,
-    "IDFCFIRSTB": 1, # or 0.5?
-    "PNB": 1, # or 0.5
-    "AUBANK": 10,
-    "BANKBARODA": 1, # check
+    "IDFCFIRSTB": 2, # Corrected from 1
+    "PNB": 2, # Corrected from 1
+    "AUBANK": 10, 
+    "BANKBARODA": 2, 
     "BANKNIFTY": 100,
     "NIFTY": 50
 }
@@ -118,7 +118,7 @@ class InstrumentManager:
         if step < 1: return round(strike, 2)
         return int(strike)
 
-    def get_atm_option_tokens(self, symbol: str, strike: float) -> Optional[Dict]:
+    def get_atm_option_tokens(self, symbol: str, strike: float, api=None) -> Optional[Dict]:
         """Get CE and PE tokens for the nearest expiry at this strike"""
         if symbol not in self.option_map:
             logger.warning(f"Symbol {symbol} not in option map")
@@ -134,15 +134,43 @@ class InstrumentManager:
             
         nearest_expiry = valid_expiries[0]
         
-        # Look for exact strike match (allow small float tolerance)
-        # Note: formatting keys as floats, but tolerance is safe
-        
-        # Check direct lookup first
+        # Look for exact strike match
         options = self.option_map[symbol][nearest_expiry].get(strike)
         
-        # If not found, try fuzzy text (sometimes strike 600.0 is key 600)
-        # But we parsed as float, so it should match if strike is passed as float
-        
+        if not options and api:
+            # SEARCH FALLBACK: Try searching via API if not in master file
+            logger.info(f"Strike {strike} not in master for {symbol}, trying API search...")
+            search_str = f"{symbol} {int(strike)}"
+            try:
+                # search_scrip returns a list of results
+                results = api.search_scrip(exchange="NFO", searchstr=search_str)
+                if results and isinstance(results, list):
+                    # Filter for this specific strike, nearest month CE/PE
+                    ce_token = None
+                    pe_token = None
+                    ce_tsym = ""
+                    pe_tsym = ""
+                    
+                    # Search logic: find tokens matching strike and type
+                    for res in results:
+                        tsym = res.get('tsym', '')
+                        if str(int(strike)) in tsym:
+                            if tsym.endswith('CE') or 'C' + str(int(strike)) in tsym: # CE
+                                ce_token = res.get('token')
+                                ce_tsym = tsym
+                            elif tsym.endswith('PE') or 'P' + str(int(strike)) in tsym: # PE
+                                pe_token = res.get('token')
+                                pe_tsym = tsym
+                    
+                    if ce_token and pe_token:
+                        logger.info(f"Found tokens via API: CE={ce_token}, PE={pe_token}")
+                        return {
+                            'CE': {'token': ce_token, 'tsym': ce_tsym},
+                            'PE': {'token': pe_token, 'tsym': pe_tsym}
+                        }
+            except Exception as e:
+                logger.error(f"API Search Fallback failed: {e}")
+
         if options:
             return options
         else:

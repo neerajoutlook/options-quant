@@ -12,9 +12,35 @@
     <div class="container">
         <!-- Header -->
         <header class="header">
-            <h1>Bank Nifty HFT Dashboard</h1>
+            <h1>Bank Nifty HFT Dashboard
+                <span id="global-mode-badge" class="mode-badge">PAPER</span>
+                <span id="ai-signal" class="ai-signal-badge">AI: --</span>
+            </h1>
             <div class="header-actions">
+                <div class="mode-toggle-container">
+                    <span class="mode-label">AI Auto Trade:</span>
+                    <label class="switch">
+                        <input type="checkbox" id="auto-trade-toggle">
+                        <span class="slider round"></span>
+                    </label>
+                    <span id="auto-trade-status" class="mode-status">OFF</span>
+                </div>
+                <div class="mode-toggle-container">
+                    <span class="mode-label">Mode:</span>
+                    <label class="switch">
+                        <input type="checkbox" id="mode-toggle">
+                        <span class="slider round"></span>
+                    </label>
+                    <span id="mode-status" class="mode-status">Paper</span>
+                </div>
                 <div class="qty-controls">
+                    <label>Product:
+                        <select id="product-type" class="product-select">
+                            <option value="I">MIS (Intraday)</option>
+                            <option value="C">CNC (Delivery)</option>
+                            <option value="M">NRML (Normal)</option>
+                        </select>
+                    </label>
                     <label>Stock Qty: <input type="number" id="qty-stock" value="1" min="1"></label>
                     <label>Opt Lots: <input type="number" id="qty-option" value="1" min="1"></label>
                 </div>
@@ -38,9 +64,71 @@
             <div class="last-update">Last: <span id="last-update">--</span></div>
         </div>
 
-        <!-- Widget Grid Container -->
-        <div id="widget-grid" class="widget-grid">
-            <!-- Widgets will be injected here by JS -->
+        <div class="main-layout">
+            <!-- Sidebar: Orders & Logs -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <div class="header-row">
+                        <h2>Orders & Activity</h2>
+                        <span id="order-count" class="badge">0</span>
+                    </div>
+                    <div class="history-controls">
+                        <input type="date" id="history-date" class="date-picker">
+                        <button id="btn-clear-history" class="btn-clear" title="Clear for selected date">🗑️
+                            Clear</button>
+                    </div>
+                </div>
+                <div id="orders-log" class="orders-log">
+                    <div class="empty-log">No recent orders</div>
+                </div>
+            </aside>
+
+            <!-- Main Dashboard Terminal -->
+            <main class="dashboard-terminal">
+                <!-- Left: Bears -->
+                <div class="terminal-column bears-col">
+                    <div class="col-header bearish">🐻 BEARS (Laggards)</div>
+                    <div id="bears-list" class="column-list">
+                        <!-- Bearish stocks injected here -->
+                    </div>
+                </div>
+
+                <!-- Center: Active Trades -->
+                <div class="terminal-column center-col">
+                    <div class="col-header trades">⚡ ACTIVE TRADES & CONTROL</div>
+                    <div id="positions-table-container" class="trades-table-container">
+                        <table class="trades-table">
+                            <thead>
+                                <tr>
+                                    <th>TIME</th>
+                                    <th>SYMBOL</th>
+                                    <th>SIDE</th>
+                                    <th>QTY</th>
+                                    <th>ENTRY</th>
+                                    <th>LTP</th>
+                                    <th>P&L</th>
+                                </tr>
+                            </thead>
+                            <tbody id="positions-table-body">
+                                <tr>
+                                    <td colspan="7" class="empty-table">No active trades</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Market Pulse / Info -->
+                    <div id="widget-grid" class="widget-grid" style="display:none;"></div>
+                </div>
+
+                <!-- Right: Bulls -->
+                <div class="terminal-column bulls-col">
+                    <div class="col-header bullish">🐂 BULLS (Leaders)</div>
+                    <div id="bulls-list" class="column-list">
+                        <!-- Bullish stocks injected here -->
+                    </div>
+                </div>
+            </main>
         </div>
 
         <!-- Performance Metrics -->
