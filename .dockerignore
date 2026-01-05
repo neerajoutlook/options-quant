@@ -1,0 +1,44 @@
+# Ignore Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Ignore logs (keep structure)
+logs/*.log
+logs/*.json
+!logs/.gitkeep
+
+# Ignore data downloads
+data/*.txt
+data/*.json
+!data/download_instruments.py
+!data/.gitkeep
+
+# Ignore PID file
+.bot.pid
+
+# Ignore IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignore OS
+.DS_Store
+Thumbs.db
+
+# Ignore sensitive
+.env
+.env.local
+
+# Docker
+.dockerignore
+
+# Temporary
+*.tmp
+temp/

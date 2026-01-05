@@ -1,0 +1,13 @@
+NorenRestApiPy
+python-dotenv
+requests
+pandas
+loguru
+pyotp
+websocket-client
+psutil
+# Web Platform Dependencies
+fastapi
+uvicorn
+aioredis
+msgpack

@@ -1,0 +1,288 @@
+/* Trading CSS */
+body {
+    background-color: #0d1117;
+    color: #c9d1d9;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 0;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Header */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.header h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.header-actions {
+    margin-left: auto;
+    margin-right: 20px;
+}
+
+.btn-panic {
+    background-color: #7f1d1d;
+    /* Deep Red */
+    color: #fca5a5;
+    /* Light Red Text */
+    border: 1px solid #b91c1c;
+    padding: 8px 16px;
+    font-weight: bold;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.2s;
+}
+
+.btn-panic:hover {
+    background-color: #dc2626;
+    /* Brighter Red */
+    color: white;
+}
+
+.connection-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9rem;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.status-dot.connected {
+    background-color: #2ea043;
+    box-shadow: 0 0 5px #2ea043;
+}
+
+.status-dot.disconnected {
+    background-color: #da3633;
+}
+
+/* Index Card (Bank Nifty) */
+.index-card {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 15px;
+    display: grid;
+    grid-template-columns: auto auto auto 1fr;
+    gap: 20px;
+    align-items: baseline;
+    margin-bottom: 20px;
+}
+
+.index-name {
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: #58a6ff;
+}
+
+.index-price {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.index-change {
+    font-size: 1.1rem;
+}
+
+.index-change.positive {
+    color: #2ea043;
+}
+
+.index-change.negative {
+    color: #da3633;
+}
+
+.last-update {
+    margin-left: auto;
+    color: #8b949e;
+    font-size: 0.85rem;
+}
+
+/* Widget Grid Layout */
+.widget-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.stock-widget {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.widget-header {
+    padding: 15px;
+    background-color: #21262d;
+    border-bottom: 1px solid #30363d;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.header-left {
+    display: flex;
+    align-items: baseline;
+    gap: 15px;
+}
+
+.header-symbol {
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: #58a6ff;
+}
+
+.header-price {
+    font-size: 1.3rem;
+    font-weight: bold;
+    color: #c9d1d9;
+}
+
+.header-change {
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+.widget-body {
+    padding: 0;
+}
+
+.mini-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.mini-table th,
+.mini-table td {
+    padding: 8px 12px;
+    text-align: right;
+    border-bottom: 1px solid #21262d;
+}
+
+.mini-table th:first-child,
+.mini-table td:first-child {
+    text-align: left;
+}
+
+.mini-table tr:last-child td {
+    border-bottom: none;
+}
+
+.mini-table th {
+    background-color: #1a1f26;
+    color: #8b949e;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+}
+
+.positive {
+    color: #2ea043;
+}
+
+.negative {
+    color: #da3633;
+}
+
+.neutral {
+    color: #8b949e;
+}
+
+
+/* Actions */
+.actions-cell {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    align-items: center;
+}
+
+.btn-trade {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: bold;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.btn-buy {
+    color: #4ade80;
+    border-color: #14532d;
+    background-color: #14532d;
+}
+
+.btn-buy:hover {
+    background-color: #22c55e;
+    color: white;
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+}
+
+.btn-sell {
+    color: #f87171;
+    border-color: #7f1d1d;
+    background-color: #450a0a;
+}
+
+.btn-sell:hover {
+    background-color: #ef4444;
+    color: white;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+.btn-exit {
+    color: #9ca3af;
+    border-color: #374151;
+}
+
+.btn-exit:hover {
+    background-color: #6b7280;
+    color: white;
+}
+
+/* Metrics Footer */
+.metrics {
+    margin-top: 20px;
+    border-top: 1px solid #30363d;
+    padding-top: 10px;
+    display: flex;
+    gap: 20px;
+    color: #8b949e;
+    font-size: 0.85rem;
+}
+
+.metric-value {
+    color: #c9d1d9;
+    font-family: monospace;
+    margin-left: 5px;
+}

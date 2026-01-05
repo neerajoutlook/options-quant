@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: banknifty-bot
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    environment:
+      - TZ=Asia/Kolkata
+      - PYTHONUNBUFFERED=1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python main.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

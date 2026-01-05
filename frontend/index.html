@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bank Nifty HFT Dashboard</title>
+    <link rel="stylesheet" href="/static/css/trading.css">
+</head>
+
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Bank Nifty HFT Dashboard</h1>
+            <div class="header-actions">
+                <button id="btn-panic" class="btn-panic" onclick="window.priceGrid.panicExit()">🔥 PANIC EXIT
+                    ALL</button>
+            </div>
+            <div class="connection-status">
+                <span id="status-indicator" class="status-dot disconnected"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </header>
+
+        <!-- Main Index Card -->
+        <div class="index-card">
+            <div class="index-name">BANKNIFTY</div>
+            <div class="index-price" id="banknifty-price">--</div>
+            <div class="index-change" id="banknifty-change">
+                <span class="change-value">--</span>
+                <span class="change-percent">(--)</span>
+            </div>
+            <div class="last-update">Last: <span id="last-update">--</span></div>
+        </div>
+
+        <!-- Widget Grid Container -->
+        <div id="widget-grid" class="widget-grid">
+            <!-- Widgets will be injected here by JS -->
+        </div>
+
+        <!-- Performance Metrics -->
+        <footer class="metrics">
+            <div class="metric">
+                <span class="metric-label">Total P&L:</span>
+                <span id="total-pnl" class="metric-value pnl-neutral">₹0.00</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Update Rate:</span>
+                <span id="fps" class="metric-value">0 fps</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Latency:</span>
+                <span id="latency" class="metric-value">-- ms</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Symbols:</span>
+                <span id="symbol-count" class="metric-value">0</span>
+            </div>
+        </footer>
+    </div>
+
+    <script src="/static/js/websocket.js"></script>
+    <script src="/static/js/price-grid.js"></script>
+</body>
+
+</html>
