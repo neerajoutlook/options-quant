@@ -146,30 +146,111 @@ class SimConfig(pydantic.BaseModel):
 async def set_simulation_config(cfg: SimConfig):
     """Update simulation mode and speed"""
     from main import active_engine
+    from core import config
     try:
-        if active_engine:
+        if not active_engine:
+            return {"status": "error", "message": "Engine not active"}
+        
+        # Guard: Prevent switching from simulation to live mode if started offline
+        if not cfg.enabled and config.SIMULATION_MODE:
+            # Check if the API was ever logged in
+            if hasattr(active_engine, 'offline') and active_engine.offline:
+                logger.warning("⚠️ Cannot switch to live mode - engine started without API login")
+                return {
+                    "status": "error", 
+                    "message": "Cannot switch to live mode. Restart the application without simulation mode to use live trading."
+                }
+        
+        # If we're already in simulation mode and just changing speed
+        if config.SIMULATION_MODE and cfg.enabled and hasattr(active_engine, 'simulator'):
+            if cfg.speed != config.SIMULATION_SPEED:
+                logger.info(f"⚡ Updating simulation speed: {config.SIMULATION_SPEED}x → {cfg.speed}x")
+                config.SIMULATION_SPEED = cfg.speed
+                if active_engine.simulator:
+                    active_engine.simulator.speed = cfg.speed
+                return {"status": "ok", "message": f"Speed updated to {cfg.speed}x"}
+            return {"status": "ok", "message": "No change needed"}
+        
+        # Otherwise, do full mode switch (requires restart)
+        if hasattr(active_engine, 'set_simulation_mode'):
             active_engine.set_simulation_mode(cfg.enabled, cfg.speed)
             return {"status": "ok", "message": f"Simulation set to {cfg.enabled} at {cfg.speed}x"}
-        return {"status": "error", "message": "Engine not active"}
+        
+        return {"status": "error", "message": "Engine not ready"}
+    except AttributeError as e:
+        # Handle missing attributes gracefully in offline mode
+        logger.warning(f"Simulation config warning (offline mode): {e}")
+        return {"status": "error", "message": "Cannot switch modes - restart required for live trading"}
     except Exception as e:
         logger.error(f"Error setting simulation config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
 
 @app.get("/api/orders")
 async def get_orders(date: str = None):
     """Get recent order history and logs, optionally filtered by date (YYYY-MM-DD)"""
     try:
         from core.database import db
+        from core import config
+        import json
+        from pathlib import Path
+        
+        orders = []
+        
+        # 1. Fetch from DB (Real Trades)
         if date:
-            return {"orders": db.get_orders_by_date(date)}
-            
-        from main import active_engine
-        if active_engine and hasattr(active_engine, 'order_history'):
-            if not active_engine.order_history:
-                # If in-memory is empty, try loading from DB
-                return {"orders": db.get_recent_orders()}
-            return {"orders": active_engine.order_history}
-        return {"orders": db.get_recent_orders()}
+            orders = db.get_orders_by_date(date)
+        else:
+            from main import active_engine
+            if active_engine and hasattr(active_engine, 'order_history') and active_engine.order_history:
+                orders = active_engine.order_history
+            else:
+                orders = db.get_recent_orders()
+        
+        # 2. Fetch from Paper Trading JSON (Simulation/Paper)
+        # We assume if the user is in simulation mode, they want to see these
+        paper_file = Path("logs/paper_trades.json")
+        if paper_file.exists():
+            try:
+                with open(paper_file, 'r') as f:
+                    paper_trades = json.load(f)
+                    
+                # Filter for today/requested date if needed
+                # For now, just append recent ones or all if date matches
+                # PaperTrade format: entry_time (ISO), symbol (derived?), etc.
+                # We need to adapt them to match DB schema for UI:
+                # {id, symbol, side, qty, price, status, timestamp, message}
+                
+                for pt in reversed(paper_trades[-50:]): # Last 50 paper trades
+                    entry_ts = pt.get('entry_time', '')
+                    if date and not entry_ts.startswith(date):
+                        continue
+                        
+                    # Adapt PaperTrade to Order Schema
+                    status = pt.get('status', 'OPEN')
+                    if pt.get('exit_time'):
+                        status = "CLOSED"
+                        
+                    orders.append({
+                        "id": pt.get('id', f"sim-{entry_ts[-6:]}"),
+                        "symbol": pt.get('symbol', f"{pt.get('option_type')} {pt.get('entry_strike')}"),
+                        "side": pt.get('side', "BUY"),
+                        "qty": pt.get('quantity'),
+                        "price": pt.get('entry_price'),
+                        "status": f"SIM-{status}",
+                        "timestamp": entry_ts,
+                        "reason": pt.get('entry_reason', 'Paper Trade')
+                    })
+                    
+                    # If closed, maybe show exit as separate line?
+                    # For simplicity, just show entry for now.
+                    
+            except Exception as e:
+                logger.error(f"Error reading paper trades: {e}")
+
+        # Sort by timestamp desc
+        orders.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        return {"orders": orders}
+
     except Exception as e:
         logger.error(f"API Orders Error: {e}")
         return {"error": str(e)}
@@ -245,6 +326,120 @@ async def get_risk_config():
         return {}
     except Exception as e:
         return {"error": str(e)}
+
+@app.get("/api/strategy/threshold")
+async def get_strategy_threshold():
+    """Get current strategy threshold"""
+    try:
+        from main import active_engine
+        if active_engine and hasattr(active_engine, 'strategy'):
+            return {
+                "threshold": active_engine.strategy.threshold,
+                "default": 2.5
+            }
+        return {"threshold": 2.5, "default": 2.5}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/strategy/threshold")
+async def set_strategy_threshold(threshold: float = Query(...)):
+    """Update strategy threshold dynamically"""
+    try:
+        from main import active_engine
+        from core.database import db
+        
+        if active_engine and hasattr(active_engine, 'strategy'):
+            active_engine.strategy.threshold = threshold
+            db.save_state("strategy_threshold", threshold)
+            logger.info(f"🎯 Strategy threshold updated to {threshold}")
+            return {"status": "success", "threshold": threshold}
+        return {"status": "error", "message": "Engine not ready"}
+    except Exception as e:
+        logger.error(f"Threshold update error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/strategy/timeframe")
+async def get_strategy_timeframe():
+    """Get current strategy timeframe (minutes)"""
+    try:
+        from main import active_engine
+        timeframe = 5 # default
+        if active_engine and hasattr(active_engine, 'active_timeframe'):
+            timeframe = active_engine.active_timeframe
+        
+        return {
+            "timeframe": timeframe,
+            "available": [1, 3, 5, 15]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/strategy/timeframe")
+async def set_strategy_timeframe(minutes: int = Query(...)):
+    """Update strategy timeframe dynamically"""
+    try:
+        from main import active_engine
+        from core.database import db
+        
+        if active_engine and hasattr(active_engine, 'set_timeframe'):
+            if active_engine.set_timeframe(minutes):
+                db.save_state("strategy_timeframe", minutes)
+                return {"status": "success", "timeframe": minutes}
+            else:
+                return {"status": "error", "message": f"Invalid timeframe {minutes}. Supported: 1, 3, 5, 15"}
+            
+        return {"status": "error", "message": "Engine not ready"}
+    except Exception as e:
+        logger.error(f"Timeframe update error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/test_trade")
+async def test_trade():
+    """Simulate a test trade for UI verification"""
+    try:
+        from main import active_engine
+        import random
+        
+        if not active_engine:
+            return {"status": "error", "message": "Engine not ready"}
+        
+        # Generate a random test order
+        symbols = ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK"]
+        symbol = random.choice(symbols)
+        side = random.choice(["BUY_CE", "BUY_PE"])
+        price = round(random.uniform(50, 200), 2)
+        
+        # Create a test order entry
+        test_order = {
+            "symbol": f"{symbol}27JAN26{'C' if 'CE' in side else 'P'}1000",
+            "side": side,
+            "qty": 15,
+            "price": price,
+            "status": "FILLED (TEST)",
+            "timestamp": datetime.now().isoformat(),
+            "reason": "Manual test trade"
+        }
+        
+        # Add to order history if available
+        if hasattr(active_engine, 'order_history'):
+            active_engine.order_history.append(test_order)
+        
+        logger.info(f"🧪 Test trade generated: {side} {test_order['symbol']} @ {price}")
+        return {"status": "success", "order": test_order}
+        
+    except Exception as e:
+        logger.error(f"Test trade error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/market/status")
+async def get_market_status_api():
+    """Get current market status (open/closed) and reason"""
+    try:
+        from core.market_hours import get_market_status
+        return get_market_status()
+    except Exception as e:
+        logger.error(f"Market status error: {e}")
+        return {"is_open": False, "reason": "Unknown", "mode": "SIMULATION"}
 
 @app.get("/api/price/{symbol}")
 async def get_symbol_price(symbol: str):

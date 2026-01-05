@@ -182,7 +182,9 @@ class Strategy:
         self.threshold = min_strength
         self.min_hold_time = min_hold_time
         self.confirmation_count = min_confirmation
-        self.last_signal_time = 0  
+        self.confirmation_count = min_confirmation
+        from datetime import datetime
+        self.last_signal_time = datetime.min # Use datetime to allow subtraction
         
         # New: Tracking for higher reliability
         self.score_buffer = [] # List of recent total scores
@@ -193,14 +195,17 @@ class Strategy:
         self.price_history.append((current_time, current_price))
         
         # Cleanup: Keep 10 minutes of history
-        while self.price_history and current_time - self.price_history[0][0] > 600:
+        # Cleanup: Keep 10 minutes of history
+        while self.price_history and (current_time - self.price_history[0][0]).total_seconds() > 600:
             self.price_history.pop(0)
             
         if len(self.price_history) < 2:
             return 0.0
             
         # Look back ~2 minutes (120s)
-        lookback_time = current_time - 120
+        # Fix: Cannot subtract int from datetime
+        from datetime import timedelta
+        lookback_time = current_time - timedelta(seconds=120)
         old_price = self.price_history[0][1]
         for t, p in reversed(self.price_history):
             if t <= lookback_time:
@@ -224,6 +229,11 @@ class Strategy:
         """
         Enhanced AI Scoring with Momentum and Validation
         """
+        # Normalize timestamp to datetime if it's float/int
+        if isinstance(timestamp, (int, float)):
+             from datetime import datetime
+             timestamp = datetime.fromtimestamp(timestamp)
+
         # 1. Constituent Strength
         strength = self.weightage_calc.calculate_weighted_strength()
         
@@ -257,6 +267,12 @@ class Strategy:
         if config.SIMULATION_MODE and self.position is None:
              if score > 0.5: score += 1.5 # Boost weak buy
              elif score < -0.5: score -= 1.5 # Boost weak sell
+        
+        try:
+             logger.info(f"📊 Strategy Scan: Price={price:.2f}, Score={score:.1f} (Mom={mom_score:.1f}, Str={strength:.1f})")
+        except TypeError as e:
+             print(f"CRASH DEBUG: Price={type(price)}({price}), Score={type(score)}({score}), Mom={type(mom_score)}({mom_score}), Str={type(strength)}({strength})")
+             raise e
 
         
         # 4. Signal Smoothing
@@ -272,7 +288,8 @@ class Strategy:
 
         # 5. Signal Generation Logic
         time_since_last_signal = timestamp - self.last_signal_time
-        if time_since_last_signal < self.min_hold_time and self.last_signal_time > 0:
+        if time_since_last_signal.total_seconds() < self.min_hold_time and self.last_signal_time != datetime.min:
+            logger.debug(f"⏳ Holding... {int(time_since_last_signal.total_seconds())}s since last signal")
             return None
 
         signal = None
@@ -287,11 +304,14 @@ class Strategy:
                 signal = Signal("BUY_CE", "BANKNIFTY", price, reason, timestamp)
                 self.position = "CE"
                 self.last_signal_time = timestamp
+                logger.info(f"🚀 SIGNAL CREATED: BUY_CE | Score: {avg_score}")
             elif avg_score <= -self.threshold:
                 reason = f"Score {avg_score:.1f} (Mom: {mom_score:+.1f})"
                 signal = Signal("BUY_PE", "BANKNIFTY", price, reason, timestamp)
                 self.position = "PE"
                 self.last_signal_time = timestamp
+                logger.info(f"🚀 SIGNAL CREATED: BUY_PE | Score: {avg_score}")
+
             
             # 2. Low Conviction but High Momentum (Neutral Straddle)
             elif config.ENABLE_STRADDLES and abs(conviction) < 1.0 and abs(mom_score) >= 1.5:

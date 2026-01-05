@@ -1,544 +1,128 @@
 /**
  * Ultra-fast Price Grid Rendering
  * Optimized for HFT with minimal DOM manipulation
+ * Pro Terminal Edition
  */
 
 class PriceGrid {
     constructor() {
         this.gridContainer = document.getElementById('widget-grid');
-        this.widgets = new Map(); // symbol -> widget element (for underlying)
+        this.widgets = new Map(); // symbol -> widget element
         this.optionRows = new Map(); // optionSymbol -> row element
-        this.lastPrices = new Map(); // symbol -> last price (for flash detection)
 
-        // Performance tracking
-        this.updateCount = 0;
-        this.lastFpsUpdate = Date.now();
-        this.fps = 0;
+        // Market Watch Data
+        this.marketData = []; // Store all stock data for sorting
+        this.currentTab = 'bears'; // 'bears' or 'bulls'
+        this.marketList = document.getElementById('market-list');
 
-        // Bank Nifty main elements
+        // Bank Nifty Hero
         this.bankniftyPrice = document.getElementById('banknifty-price');
         this.bankniftyChange = document.getElementById('banknifty-change');
-        this.lastUpdate = document.getElementById('last-update');
-
-        // Metrics elements
-        this.fpsElement = document.getElementById('fps');
-        this.latencyElement = document.getElementById('latency');
-        this.symbolCountElement = document.getElementById('symbol-count');
 
         // Positions and Orders
         this.positions = {};
-        this.totalPnlElement = document.getElementById('total-pnl');
-        this.ordersLog = document.getElementById('orders-log');
         this.positionsTableBody = document.getElementById('positions-table-body');
-        this.orderCountBadge = document.getElementById('order-count');
+        this.ordersLog = document.getElementById('orders-log');
+        this.posCountBadge = document.getElementById('pos-count');
 
-        // Column Lists
-        this.bearsList = document.getElementById('bears-list');
-        this.bullsList = document.getElementById('bulls-list');
-
-        this.startPositionSync();
-        this.startOrderSync();
-        this.startStatsSync();
-
-        // Config
-        this.lotSizes = { 'BANKNIFTY': 15, 'NIFTY': 50 }; // Defaults
-        this.loadConfig();
-
-        // Trading Mode
-        this.paperMode = true;
-        this.autoTradeEnabled = false;
-        this.modeToggle = document.getElementById('mode-toggle');
-        this.modeStatus = document.getElementById('mode-status');
-        this.autoTradeToggle = document.getElementById('auto-trade-toggle');
-        this.autoTradeStatus = document.getElementById('auto-trade-status');
-        this.aiSignalBadge = document.getElementById('ai-signal');
-        this.globalModeBadge = document.getElementById('global-mode-badge');
-        this.productTypeEl = document.getElementById('product-type');
-
+        // Init
         this.initModeToggle();
         this.initAutoTradeToggle();
         this.initSimulationControls();
+        this.initAutoTradeToggle();
+        this.initSimulationControls();
+        this.initThresholdSlider();
+        this.initTimeframeControl();
+        this.startOrderSync(); // Start polling for orders
 
-        // History Controls
-        this.historyDateInput = document.getElementById('history-date');
-        this.btnClearHistory = document.getElementById('btn-clear-history');
+        // Config
+        this.lotSizes = { 'BANKNIFTY': 15, 'NIFTY': 50 };
+        this.loadConfig();
 
-        // Start Sorting interval
-        setInterval(() => this.sortColumns(), 3000);
+        // Render loop
+        setInterval(() => this.renderMarketWatch(), 2000);
+    }
 
-        if (this.historyDateInput) {
-            this.historyDateInput.value = new Date().toISOString().split('T')[0];
-            this.initHistoryControls();
+    switchTab(tab) {
+        this.currentTab = tab;
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        const btn = document.querySelector(`.tab-btn[onclick*="${tab}"]`);
+        if (btn) btn.classList.add('active');
+        this.renderMarketWatch(); // Force re-render
+    }
+
+    renderMarketWatch() {
+        if (!this.marketList) return;
+
+        // Filter and Sort
+        let items = [...this.marketData];
+        if (this.currentTab === 'bears') {
+            items.sort((a, b) => a.percent_change - b.percent_change);
+        } else {
+            items.sort((a, b) => b.percent_change - a.percent_change);
         }
 
-        // Start FPS counter
-        this.startFpsCounter();
-    }
-
-    async initModeToggle() {
-        if (!this.modeToggle) return;
-
-        // Fetch initial mode
-        try {
-            const res = await fetch('/api/mode');
-            const data = await res.json();
-            this.setPaperMode(data.paper_trading_mode);
-        } catch (e) { console.error('Mode Fetch Error', e); }
-
-        // Handle toggle change
-        // Handle toggle change
-        this.modeToggle.addEventListener('change', async () => {
-            const isChecked = this.modeToggle.checked;
-            const newPaperMode = !isChecked; // Checked = REAL (paper=false), Unchecked = PAPER (paper=true)
-
-            // Safety confirmation for Real mode
-            if (isChecked && !confirm("⚠️ SWITCH TO REAL TRADING?\n\nThis will place REAL orders at Shoonya.")) {
-                this.modeToggle.checked = false; // Revert to Paper
-                return;
-            }
-
-            try {
-                const res = await fetch(`/api/mode?paper_mode=${newPaperMode}`, { method: 'POST' });
-                const data = await res.json();
-                this.setPaperMode(data.paper_trading_mode);
-            } catch (e) {
-                console.error('Mode Update Error', e);
-                alert('Failed to update trading mode');
-            }
-        });
-    }
-
-    setPaperMode(isPaper) {
-        this.paperMode = isPaper;
-        if (this.modeToggle) this.modeToggle.checked = !isPaper; // Checked = REAL
-        if (this.modeStatus) {
-            this.modeStatus.textContent = isPaper ? 'Paper' : 'REAL';
-            this.modeStatus.className = 'mode-status ' + (isPaper ? 'paper' : 'real');
-        }
-        if (this.globalModeBadge) {
-            this.globalModeBadge.textContent = isPaper ? 'PAPER' : 'REAL';
-            this.globalModeBadge.className = 'mode-badge ' + (isPaper ? 'paper' : 'real');
-        }
-    }
-
-    async initAutoTradeToggle() {
-        if (!this.autoTradeToggle) return;
-
-        // Fetch initial state
-        try {
-            const res = await fetch('/api/auto_trade');
-            const data = await res.json();
-            this.setAutoTrade(data.auto_trading_enabled);
-        } catch (e) { console.error('Failed to fetch auto-trade status', e); }
-
-        this.autoTradeToggle.addEventListener('change', async (e) => {
-            const enabled = e.target.checked;
-            try {
-                const res = await fetch(`/api/auto_trade?enabled=${enabled}`, { method: 'POST' });
-                const data = await res.json();
-                this.setAutoTrade(data.auto_trading_enabled);
-            } catch (err) {
-                console.error('Failed to set auto-trade', err);
-                e.target.checked = !enabled; // Revert
-            }
-        });
-    }
-
-    setAutoTrade(enabled) {
-        this.autoTradeEnabled = enabled;
-        if (this.autoTradeToggle) this.autoTradeToggle.checked = enabled;
-        if (this.autoTradeStatus) {
-            this.autoTradeStatus.textContent = enabled ? 'ON' : 'OFF';
-            this.autoTradeStatus.className = 'mode-status ' + (enabled ? 'enabled' : 'disabled');
-        }
-    }
-
-    initSimulationControls() {
-        this.simToggle = document.getElementById('sim-mode-toggle');
-        this.simSpeedControls = document.getElementById('sim-speed-controls');
-        this.simSpeedRadios = document.getElementsByName('sim-speed');
-
-        if (!this.simToggle) return;
-
-        // Toggle Event
-        this.simToggle.addEventListener('change', async (e) => {
-            const enabled = e.target.checked;
-            const speed = this.getSimSpeed();
-            await this.setSimulationConfig(enabled, speed);
-        });
-
-        // Speed Radio Events
-        if (this.simSpeedRadios) {
-            this.simSpeedRadios.forEach(radio => {
-                radio.addEventListener('change', async (e) => {
-                    const enabled = this.simToggle.checked;
-                    // Only update if simulator is ON (or maybe allowed even if off? Logic says yes)
-                    const speed = parseFloat(e.target.value);
-                    await this.setSimulationConfig(enabled, speed);
-                });
-            });
-        }
-    }
-
-    getSimSpeed() {
-        let speed = 1.0;
-        if (this.simSpeedRadios) {
-            this.simSpeedRadios.forEach(r => {
-                if (r.checked) speed = parseFloat(r.value);
-            });
-        }
-        return speed;
-    }
-
-    async setSimulationConfig(enabled, speed) {
-        try {
-            await fetch('/api/simulation/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled, speed })
-            });
-            // Controls visibility update handled by updateStats which runs every 5s, 
-            // but for responsiveness we can update UI immediately too
-            this.updateSimUI(enabled, speed);
-        } catch (e) {
-            console.error('Sim Config Error', e);
-            alert('Failed to update Simulation settings');
-            // Revert UI if needed?
-        }
-    }
-
-    updateSimUI(enabled, speed) {
-        if (this.simToggle) this.simToggle.checked = enabled;
-        if (this.simSpeedControls) {
-            // Show speed controls only if enabled
-            this.simSpeedControls.classList.toggle('hidden', !enabled);
-        }
-        if (this.simSpeedRadios) {
-            this.simSpeedRadios.forEach(r => {
-                if (Math.abs(parseFloat(r.value) - speed) < 0.1) r.checked = true;
-            });
-        }
-    }
-
-    startStatsSync() {
-        this.updateStats(); // Initial fetch
-        setInterval(() => this.updateStats(), 5000);
-    }
-
-    async updateStats() {
-        try {
-            const res = await fetch('/api/stats');
-            const data = await res.json();
-
-            // Strategy Badges
-            const badgeHedged = document.getElementById('badge-hedged');
-            const badgeStraddle = document.getElementById('badge-straddle');
-            if (badgeHedged) badgeHedged.classList.toggle('hidden', !data.hedged_mode);
-            if (badgeStraddle) badgeStraddle.classList.toggle('hidden', !data.straddle_mode);
-
-            const badgeSim = document.getElementById('badge-simulator');
-            if (badgeSim) badgeSim.classList.toggle('hidden', !data.simulation_mode);
-
-            // Sync Simulator UI Controls
-            this.updateSimUI(data.simulation_mode, data.simulation_speed);
-
-            // Daily Stop Metric
-            const dailyStopEl = document.getElementById('daily-stop');
-            if (dailyStopEl) dailyStopEl.textContent = `₹${data.daily_loss_limit}`;
-
-            // Sync Auto Trade status (Backend might disable it via Hard Stop)
-            if (this.autoTradeEnabled !== data.auto_trade_enabled) {
-                this.setAutoTrade(data.auto_trade_enabled);
-            }
-        } catch (e) { console.warn('Stats Sync Error', e); }
-    }
-
-    initHistoryControls() {
-        if (this.historyDateInput) {
-            this.historyDateInput.addEventListener('change', () => {
-                this.fetchOrders(this.historyDateInput.value);
-            });
-        }
-        if (this.btnClearHistory) {
-            this.btnClearHistory.addEventListener('click', () => {
-                this.clearHistory(this.historyDateInput.value);
-            });
-        }
-    }
-
-    async fetchOrders(date) {
-        try {
-            const res = await fetch(`/api/orders?date=${date}`);
-            const data = await res.json();
-            if (data.orders) {
-                this.renderOrders(data.orders);
-            }
-        } catch (e) { console.error('Failed to fetch historical orders', e); }
-    }
-
-    async clearHistory(date) {
-        if (!confirm(`Clear all history for ${date}? This cannot be undone.`)) return;
-        try {
-            const res = await fetch(`/api/orders/clear?date=${date}`, { method: 'POST' });
-            const data = await res.json();
-            if (data.status === 'success') {
-                alert(data.message);
-                this.fetchOrders(date); // Refresh UI
-            } else {
-                alert('Clear failed: ' + data.message);
-            }
-        } catch (e) { alert('Clear failed: ' + e); }
-    }
-
-    startPositionSync() {
-        this.panicBtn = document.getElementById('btn-panic');
-
-        setInterval(async () => {
-            try {
-                const response = await fetch('/api/positions');
-                const data = await response.json();
-                if (data.positions) {
-                    this.positions = data.positions;
-                    this.updateTotalPnl(data.total_pnl || 0);
-                    this.renderPositions(data.positions);
-
-                    // Toggle Panic Button
-                    const hasPositions = Object.values(this.positions).some(p => p.net_qty !== 0);
-                    if (this.panicBtn) {
-                        this.panicBtn.disabled = !hasPositions;
-                        this.panicBtn.style.opacity = hasPositions ? '1' : '0.5';
-                        this.panicBtn.style.cursor = hasPositions ? 'pointer' : 'not-allowed';
-                    }
-                }
-            } catch (e) { console.error('Pos Sync Error', e); }
-        }, 1000); // 1 sec sync
-    }
-
-    renderPositions(positions) {
-        if (!this.positionsTableBody) return;
-
-        const keys = Object.keys(positions);
-        const filteredKeys = keys.filter(k => positions[k].net_qty !== 0);
-
-        if (filteredKeys.length === 0) {
-            this.positionsTableBody.innerHTML = '<tr><td colspan="7" class="empty-table">No active trades</td></tr>';
-            return;
-        }
-
-        this.positionsTableBody.innerHTML = filteredKeys.map(key => {
-            const pos = positions[key];
-            const [symbol, product] = key.split(':');
-            const side = pos.net_qty > 0 ? 'BUY' : 'SELL';
-            const sideClass = pos.net_qty > 0 ? 'side-buy' : 'side-sell';
-            const pnlClass = pos.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
-            const ltp = pos.ltp || pos.avg_price;
-
-            return `
-                <tr>
-                    <td>${pos.entry_time || '<span style="opacity:0.3">Live</span>'}</td>
-                    <td><strong>${symbol}</strong></td>
-                    <td><span class="side-badge ${sideClass}">${side}</span></td>
-                    <td>${Math.abs(pos.net_qty)}</td>
-                    <td>${this.formatPrice(pos.avg_price)}</td>
-                    <td>${this.formatPrice(ltp)}</td>
-                    <td class="${pnlClass}">${pos.unrealized_pnl >= 0 ? '+' : ''}${Math.round(pos.unrealized_pnl)}</td>
-                </tr>
-            `;
-        }).join('');
-    }
-
-    startOrderSync() {
-        setInterval(async () => {
-            // Only sync if viewing today's date
-            const today = new Date().toISOString().split('T')[0];
-            const viewingToday = !this.historyDateInput || this.historyDateInput.value === today;
-            if (!viewingToday) return;
-
-            try {
-                const res = await fetch('/api/orders');
-                const data = await res.json();
-                if (data.orders) {
-                    this.renderOrders(data.orders);
-                }
-            } catch (e) { console.error('Order Sync Error', e); }
-        }, 1500); // 1.5 sec sync
-    }
-
-    renderOrders(orders) {
-        if (!this.ordersLog) return;
-
-        if (orders.length === 0) {
-            this.ordersLog.innerHTML = '<div class="empty-log">No recent orders</div>';
-            return;
-        }
-
-        if (this.orderCountBadge) this.orderCountBadge.textContent = orders.length;
-
-        // Simple render (only if changed? for now just recreate as order count is low)
-        this.ordersLog.innerHTML = orders.map(order => {
-            const isCancellable = ['PLACED', 'PENDING', 'GTT_PLACED'].includes(order.status);
-            return `
-                <div class="order-item ${order.side?.toLowerCase() || ''}">
-                    <div>
-                        <span class="order-symbol">${order.symbol}</span>
-                        <span class="order-status text-xs">${order.status}</span>
-                        ${isCancellable ? `<button onclick="window.priceGrid.cancelOrder('${order.id}')" class="order-cancel-btn">Cancel</button>` : ''}
-                    </div>
-                    <div class="order-details">
-                        <span>${order.side || 'UPD'} ${order.qty || '-'} @ ${this.formatPrice(order.price || 0)}</span>
-                        <span class="text-xs text-gray-500">${new Date(order.timestamp).toLocaleTimeString()}</span>
-                    </div>
+        const html = items.map(d => `
+            <div class="mw-row ${this.widgets.has(d.symbol) ? 'active-watch' : ''}" onclick="window.priceGrid.toggleWidget('${d.symbol}')">
+                <div>
+                    <span class="mw-sym">${d.symbol}</span>
+                    <span class="mw-trend">${d.trend || '-'}</span>
                 </div>
-            `;
-        }).join('');
+                <div>
+                    <div class="mw-price">${this.formatPrice(d.ltp)}</div>
+                    <span class="mw-chg ${this.getChangeClass(d.percent_change)}">
+                        ${d.percent_change.toFixed(2)}%
+                    </span>
+                </div>
+            </div>
+        `).join('');
+
+        this.marketList.innerHTML = html;
     }
 
-    updateTotalPnl(amount) {
-        if (!this.totalPnlElement) return;
-        this.totalPnlElement.textContent = `₹${amount.toFixed(2)}`;
-        this.totalPnlElement.className = 'metric-value ' + (amount >= 0 ? 'pnl-green' : 'pnl-red');
-    }
-
-    async loadConfig() {
-        try {
-            const res = await fetch('/api/config');
-            const config = await res.json();
-            if (config.lot_sizes) {
-                this.lotSizes = config.lot_sizes;
-            }
-            console.log('Loaded Config:', this.lotSizes);
-        } catch (e) {
-            console.error('Config Load Error:', e);
-        }
-    }
-
-
-
-    updateCell(cell, content, className = null) {
-        if (cell.textContent !== content) {
-            cell.textContent = content;
-        }
-        if (className) {
-            cell.className = className;
-        }
-    }
-
-    formatPrice(price) {
-        return price.toLocaleString('en-IN', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-        });
-    }
-
-    formatChange(change) {
-        return (change >= 0 ? '+' : '') + change.toFixed(2);
-    }
-
-    formatPercent(percent) {
-        return (percent >= 0 ? '+' : '') + percent.toFixed(2) + '%';
-    }
-
-    formatVolume(volume) {
-        if (volume >= 1000000) {
-            return (volume / 1000000).toFixed(1) + 'M';
-        } else if (volume >= 1000) {
-            return (volume / 1000).toFixed(1) + 'K';
-        }
-        return volume.toString();
-    }
-
-    getChangeClass(value) {
-        if (value > 0) return 'positive';
-        if (value < 0) return 'negative';
-        return 'neutral';
-    }
-
-    loadSnapshot(data) {
-        if (this.bearsList) this.bearsList.innerHTML = '';
-        if (this.bullsList) this.bullsList.innerHTML = '';
-        this.widgets.clear();
-        this.optionRows.clear();
-
-        // 1. Identify Parents (Underlying)
-        const parents = Object.keys(data).filter(s => !/\d/.test(s) && !s.includes('CE') && !s.includes('PE'));
-
-        // Process all symbols
-        Object.entries(data).forEach(([symbol, priceData]) => {
-            if (parents.includes(symbol)) {
-                if (!this.widgets.has(symbol)) {
-                    this.createWidget(symbol, priceData);
-                }
-                this.updatePrice(symbol, priceData);
-            } else {
-                // It's an option, find parent
-                const match = symbol.match(/^([A-Z]+)/);
-                const parent = match ? match[1] : symbol;
-
-                if (this.widgets.has(parent)) {
-                    this.addOptionRow(parent, symbol, priceData);
-                }
-            }
-        });
-        this.updateSymbolCount();
-    }
-
-    updatePrice(symbol, data) {
-        // Always update Hero Card for BANKNIFTY
-        if (symbol === 'BANKNIFTY') {
-            this.updateHeroCard(data);
-        }
-
-        // If it's a parent widget
+    toggleWidget(symbol) {
         if (this.widgets.has(symbol)) {
-            const widget = this.widgets.get(symbol);
-            this.updateWidgetHeader(symbol, data);
-
-            // Dynamic column movement
-            const pct = data.percent_change || 0;
-            const targetColumn = data.percent_change >= 0 ? this.bullsList : this.bearsList;
-            if (widget.parentElement !== targetColumn && targetColumn) {
-                targetColumn.appendChild(widget);
-            }
-            widget.dataset.pct = pct; // For sorting
+            this.closeWidget(symbol);
+        } else {
+            this.openWidget(symbol);
         }
-        // If it's an existing option row
-        else if (this.optionRows.has(symbol)) {
-            this.updateOptionRow(symbol, data);
-        }
-        // If it's a NEW option (not in rows yet)
-        else if (/\d/.test(symbol) || symbol.includes('CE') || symbol.includes('PE')) {
-            // Try to find parent
-            const match = symbol.match(/^([A-Z]+)/);
-            const parent = match ? match[1] : null;
-
-            if (parent && this.widgets.has(parent)) {
-                // Initial creation handling
-                this.addOptionRow(parent, symbol, data);
-            }
-        }
+        this.renderMarketWatch(); // Update active state styling
     }
 
-    sortColumns() {
-        [this.bullsList, this.bearsList].forEach(list => {
-            if (!list) return;
-            const items = Array.from(list.children);
-            if (items.length < 2) return;
+    openWidget(symbol) {
+        if (this.widgets.has(symbol)) return; // Already open
 
-            items.sort((a, b) => {
-                const valA = parseFloat(a.dataset.pct || 0);
-                const valB = parseFloat(b.dataset.pct || 0);
-                // For bulls, descending. For bears, ascending (most bearish first)
-                if (list === this.bullsList) return valB - valA;
-                return valA - valB;
-            });
+        // Find data in marketData to initialize
+        const data = this.marketData.find(d => d.symbol === symbol) || { ltp: 0, change: 0, percent_change: 0 };
+        const widget = this.createWidget(symbol, data);
+        this.gridContainer.appendChild(widget);
 
-            // Only append if order changed to save DOM cycles
-            items.forEach((item, index) => {
-                if (list.children[index] !== item) {
-                    list.appendChild(item);
+        // Save to localStorage
+        this.saveOpenWidgets();
+
+        // Trigger immediate update for this widget to fetch/render its options
+        // We need to re-scan our full data snapshot if we have it, or wait for next tick.
+        // For now, next tick/update will populate options.
+    }
+
+    closeWidget(symbol) {
+        const widget = this.widgets.get(symbol);
+        if (widget) {
+            widget.remove();
+            this.widgets.delete(symbol);
+
+            // Save to localStorage
+            this.saveOpenWidgets();
+
+            // Clean up related option rows from memory/map
+            // (Note: option row elements are inside the widget, so they are removed from DOM, 
+            // but we should remove from this.optionRows map to prevent leaks/errors)
+            for (const [key, val] of this.optionRows.entries()) {
+                if (key.startsWith(symbol + '_')) {
+                    this.optionRows.delete(key);
                 }
-            });
-        });
+            }
+        }
     }
 
     createWidget(symbol, data) {
@@ -552,31 +136,36 @@ class PriceGrid {
                     <span class="header-symbol">${symbol}</span>
                     <span class="header-trend">--</span>
                 </div>
-                <div class="header-price-row">
-                    <span class="header-price">--</span>
-                    <span class="header-change">--</span>
+                <div class="header-right">
+                     <div class="header-price-row">
+                        <span class="header-price">${this.formatPrice(data.ltp)}</span>
+                        <span class="header-change ${this.getChangeClass(data.percent_change)}">
+                            ${(data.percent_change || 0).toFixed(2)}%
+                        </span>
+                    </div>
+                    <button class="btn-close-widget" onclick="window.priceGrid.closeWidget('${symbol}')">×</button>
                 </div>
             </div>
             
             <div class="widget-actions">
                 <button onclick="window.priceGrid.trade('${symbol}', 'BUY', window.priceGrid.getLotSize('${symbol}'))" class="btn-action btn-buy">BUY</button>
                 <button onclick="window.priceGrid.trade('${symbol}', 'SELL', window.priceGrid.getLotSize('${symbol}'))" class="btn-action btn-sell">SELL</button>
-                <button onclick="window.priceGrid.trade('${symbol}', 'EXIT', 0)" class="btn-action btn-exit">EXIT</button>
             </div>
 
             <div class="widget-body">
-                <table class="mini-table">
+                <table class="mini-table option-table">
                     <thead>
                         <tr>
-                            <th>Option</th>
+                            <th>STRIKE</th>
+                            <th>TYPE</th>
                             <th>LTP</th>
-                            <th>% Chg</th>
-                            <th>Vol</th>
-                            <th>P&L</th>
-                            <th>Act</th>
+                            <th>CHG%</th>
+                            <th>ACTION</th>
                         </tr>
                     </thead>
-                    <tbody id="tbody-${symbol}"></tbody>
+                    <tbody id="tbody-${symbol}">
+                        <!-- Options injected here -->
+                    </tbody>
                 </table>
             </div>
         `;
@@ -585,130 +174,442 @@ class PriceGrid {
         return widget;
     }
 
-    updateWidgetHeader(symbol, data) {
-        const widget = this.widgets.get(symbol);
-        const ltpEl = widget.querySelector('.header-price');
-        const changeEl = widget.querySelector('.header-change');
+    loadSnapshot(data) {
+        // Clear old list logic
+        this.marketData = [];
+        // Don't clear active widgets, we want them to persist across re-connects if possible.
+        // But for fresh load, we might want to auto-populate.
 
-        const ltp = parseFloat(data.ltp || 0);
-        const change = parseFloat(data.change || 0);
-        const changePercent = parseFloat(data.percent_change || 0);
+        const isFreshLoad = this.marketData.length === 0 && this.widgets.size === 0;
 
-        ltpEl.textContent = this.formatPrice(ltp);
-        changeEl.textContent = `${this.formatChange(change)} (${Math.abs(changePercent).toFixed(2)}%)`;
-        changeEl.className = 'header-change ' + this.getChangeClass(changePercent);
+        // 1. Identify Parents (All except options)
+        const parents = Object.entries(data).filter(([s, _]) => !/\d/.test(s));
 
-        // Update Trend/Macro
-        const trendEl = widget.querySelector('.header-trend');
-        const macro = data.macro || {};
-        const trendText = data.trend || '-';
-        const macroText = macro.trend ? macro.trend[0] : '-';
+        parents.forEach(([symbol, d]) => {
+            if (symbol === 'BANKNIFTY') {
+                this.updateHeroCard(d);
+            } else {
+                // Add to market data for the sidebar
+                this.marketData.push({ symbol, ...d });
 
-        trendEl.innerHTML = `
-            <span class="${trendText === 'BULLISH' ? 'text-green-400' : trendText === 'BEARISH' ? 'text-red-400' : 'text-gray-500'}">${trendText}</span> 
-            <span class="text-xs text-gray-600">|</span> 
-            <span class="${macro.trend === 'BULLISH' ? 'text-green-400' : macro.trend === 'BEARISH' ? 'text-red-400' : 'text-gray-500'}">${macroText}</span>
-        `;
-    }
-
-    addOptionRow(parent, symbol, data) {
-        const tbody = document.getElementById(`tbody-${parent}`);
-        if (!tbody) return;
-
-        const row = document.createElement('tr');
-        row.id = `row-${symbol}`;
-
-        // Shorten option name for display (e.g. HDFCBANK27JAN26C1000 -> 27JAN 1000 CE)
-        // Adjust regex based on expected naming
-        let displayName = symbol.replace(parent, '');
-
-        row.innerHTML = `
-            <td>${displayName}</td>
-            <td class="opt-ltp text-right">--</td>
-            <td class="opt-pct text-right">--</td>
-            <td class="opt-vol text-right">--</td>
-            <td class="opt-pnl text-right">--</td>
-            <td class="opt-actions">
-                <button onclick="window.priceGrid.trade('${symbol}', 'BUY', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-buy">B</button>
-                <button onclick="window.priceGrid.trade('${symbol}', 'SELL', window.priceGrid.getLotSize('${symbol}'))" class="btn-trade btn-sell">S</button>
-                <button onclick="window.priceGrid.trade('${symbol}', 'EXIT', 0)" class="btn-trade btn-exit">X</button>
-            </td>
-        `;
-
-        tbody.appendChild(row);
-        this.optionRows.set(symbol, row);
-        this.updateOptionRow(symbol, data);
-    }
-
-    updateOptionRow(symbol, data) {
-        const row = this.optionRows.get(symbol);
-        const ltp = parseFloat(data.ltp || 0);
-        const change = parseFloat(data.change || 0);
-        const changePercent = parseFloat(data.percent_change || 0);
-
-        // Update cells directly
-        row.querySelector('.opt-ltp').textContent = this.formatPrice(ltp);
-
-        const pctEl = row.querySelector('.opt-pct');
-        pctEl.textContent = `${changePercent.toFixed(1)}%`;
-        pctEl.className = 'opt-pct ' + this.getChangeClass(changePercent);
-
-        row.querySelector('.opt-vol').textContent = this.formatVolume(data.volume);
-
-        // P&L (Sum across all product types for this symbol)
-        let totalPnl = 0;
-        let hasNetQty = false;
-
-        Object.keys(this.positions).forEach(key => {
-            if (key.startsWith(symbol + ':') || key === symbol) {
-                const pos = this.positions[key];
-                totalPnl += (pos.unrealized_pnl || 0);
-                if (pos.net_qty) hasNetQty = true;
+                // Update widget if it exists
+                if (this.widgets.has(symbol)) {
+                    this.updatePrice(symbol, d);
+                }
             }
         });
 
-        const pnlEl = row.querySelector('.opt-pnl');
-        pnlEl.textContent = hasNetQty ? Math.round(totalPnl) : '-';
-        pnlEl.className = 'opt-pnl font-mono ' + (totalPnl >= 0 ? 'text-green-400' : 'text-red-400');
+        this.renderMarketWatch();
+
+        // Auto-populate on first load if empty
+        if (isFreshLoad && this.marketData.length > 0) {
+            // Try to restore saved widgets first
+            const savedWidgets = this.loadOpenWidgets();
+            if (savedWidgets && savedWidgets.length > 0) {
+                // Restore previously open widgets
+                savedWidgets.forEach(symbol => {
+                    if (this.marketData.find(d => d.symbol === symbol)) {
+                        this.openWidget(symbol);
+                    }
+                });
+            } else {
+                // No saved widgets, use default top 4 movers
+                const movers = [...this.marketData].sort((a, b) => Math.abs(b.percent_change) - Math.abs(a.percent_change));
+                movers.slice(0, 4).forEach(m => this.openWidget(m.symbol));
+            }
+        }
+
+        // 2. Process Options (populate into existing widgets)
+        Object.entries(data).forEach(([symbol, d]) => {
+            if (/\d/.test(symbol)) this.updatePrice(symbol, d);
+        });
     }
 
-    updateSymbolCount() {
-        this.symbolCountElement.textContent = this.widgets.size + this.optionRows.size;
-    }
+    updatePrice(symbol, data) {
+        // Always update Hero Card for BANKNIFTY
+        if (symbol === 'BANKNIFTY') {
+            this.updateHeroCard(data);
+        }
 
-    getLotSize(symbol) {
-        // Determine if Option or Stock
-        const isOption = /\d/.test(symbol) || symbol.includes('CE') || symbol.includes('PE');
-        let multiplier = 1;
+        // Update internal cache
+        const idx = this.marketData.findIndex(x => x.symbol === symbol);
+        if (idx >= 0) {
+            this.marketData[idx] = { ...this.marketData[idx], ...data };
+            // If we are watching this list, re-render occasionally? 
+            // No, rendering full market watch on every tick is expensive. 
+            // relying on interval or granular updates. 
+            // For now, let's update DOM of the specific row if visible? 
+            // Optimization: Only re-render list periodically (done in constructor)
+        }
 
-        if (isOption) {
-            const input = document.getElementById('qty-option');
-            if (input) multiplier = parseInt(input.value) || 1;
+        // If it's a parent widget that IS OPEN
+        if (this.widgets.has(symbol)) {
+            const widget = this.widgets.get(symbol);
+            if (widget) this.updateWidgetHeader(symbol, data);
+        }
 
-            // Base logic: BANKNIFTY -> 15, NIFTY -> 50
-            let base = 1;
-            if (symbol.includes('BANKNIFTY')) base = this.lotSizes['BANKNIFTY'] || 15;
-            else if (symbol.includes('NIFTY')) base = this.lotSizes['NIFTY'] || 50;
-            else base = 1; // Default for stock options if not in config
+        // If it's an option (contains digits)
+        else if (/\d/.test(symbol)) {
+            // Check if parent widget exists
+            const match = symbol.match(/^([A-Z]+)/);
+            const parent = match ? match[1] : null;
 
-            return base * multiplier;
-        } else {
-            // Stock Logic
-            const input = document.getElementById('qty-stock');
-            if (input) multiplier = parseInt(input.value) || 1;
-            return 1 * multiplier;
+            if (parent && this.widgets.has(parent)) {
+                if (this.optionRows.has(symbol)) {
+                    this.updateOptionRow(symbol, data);
+                } else {
+                    this.addOptionRow(parent, symbol, data);
+                }
+            }
         }
     }
 
-    async panicExit() {
-        if (!confirm("🔥 ARE YOU SURE? THIS WILL CLOSE ALL POSITIONS!")) return;
-        try {
-            await fetch('/api/panic', { method: 'POST' });
-            alert('Panic Exit Triggered!');
-        } catch (e) { alert('Panic Exit Failed: ' + e); }
+    updateHeroCard(data) {
+        if (!this.bankniftyPrice) return;
+        this.bankniftyPrice.textContent = this.formatPrice(data.ltp);
+        this.bankniftyChange.textContent = `${data.change.toFixed(2)} (${data.percent_change.toFixed(2)}%)`;
+        this.bankniftyChange.className = 'index-change ' + this.getChangeClass(data.percent_change);
     }
 
+    // ... (Keep existing helper methods like formatPrice, trade, init functions)
+
+    initModeToggle() {
+        const toggle = document.getElementById('mode-toggle');
+        const statusLabel = document.getElementById('mode-status');
+
+        if (toggle && statusLabel) {
+            toggle.addEventListener('change', async (e) => {
+                const isPaper = !e.target.checked;
+                statusLabel.textContent = isPaper ? 'Paper' : 'Real';
+                statusLabel.className = isPaper ? 'toggle-state-label off' : 'toggle-state-label on';
+
+                await fetch(`/api/mode?paper_mode=${isPaper}`, { method: 'POST' });
+            });
+        }
+    }
+
+    async initAutoTradeToggle() {
+        const toggle = document.getElementById('auto-trade-toggle');
+        const statusLabel = document.getElementById('auto-trade-status');
+
+        if (toggle && statusLabel) {
+            // Load current state from backend
+            try {
+                const res = await fetch('/api/auto_trade');
+                const data = await res.json();
+                const isEnabled = data.auto_trading_enabled || false;
+
+                // Sync UI with backend state
+                toggle.checked = isEnabled;
+                statusLabel.textContent = isEnabled ? 'ON' : 'OFF';
+                statusLabel.className = isEnabled ? 'toggle-state-label on' : 'toggle-state-label off';
+            } catch (e) {
+                console.error('Failed to load auto-trade state:', e);
+            }
+
+            // Add change event listener
+            toggle.addEventListener('change', async (e) => {
+                const isOn = e.target.checked;
+                statusLabel.textContent = isOn ? 'ON' : 'OFF';
+                statusLabel.className = isOn ? 'toggle-state-label on' : 'toggle-state-label off';
+
+                try {
+                    await fetch(`/api/auto_trade?enabled=${isOn}`, { method: 'POST' });
+                    console.log(`✅ Auto-trade ${isOn ? 'enabled' : 'disabled'}`);
+                } catch (err) {
+                    console.error('Failed to update auto-trade:', err);
+                }
+            });
+        }
+    }
+
+    async initSimulationControls() {
+        const toggle = document.getElementById('sim-mode-toggle');
+        const speedRange = document.getElementById('sim-speed-range');
+        const speedValue = document.getElementById('sim-speed-value');
+
+        // 1. Sync Logic: Fetch current state from backend
+        try {
+            const res = await fetch('/api/market/status');
+            const data = await res.json();
+
+            if (data && typeof data.simulation_mode !== 'undefined') {
+                const isSimMode = data.simulation_mode;
+                const speed = data.simulation_speed || 1.0;
+
+                // Sync UI elements to backend state
+                if (toggle) toggle.checked = isSimMode;
+                if (speedRange) speedRange.value = speed;
+                if (speedValue) speedValue.textContent = `${speed}x`;
+
+                console.log(`🎮 Simulator State Synced: Mode=${isSimMode}, Speed=${speed}x`);
+            }
+        } catch (e) {
+            console.error('Failed to sync simulation controls:', e);
+        }
+
+        // 2. Event Listeners
+        if (toggle) {
+            toggle.addEventListener('change', async (e) => {
+                await this.setSimulationConfig(e.target.checked, 1.0);
+            });
+        }
+
+        if (speedRange) {
+            // Update label immediately while dragging
+            speedRange.addEventListener('input', (e) => {
+                if (speedValue) speedValue.textContent = `${e.target.value}x`;
+            });
+
+            // Commit change on drag end
+            speedRange.addEventListener('mouseup', async (e) => {
+                const speed = parseFloat(e.target.value);
+                // ALWAYS read the current state of the toggle
+                const enabled = document.getElementById('sim-mode-toggle').checked;
+                await this.setSimulationConfig(enabled, speed);
+            });
+
+            // Handle click/change for non-drag updates
+            speedRange.addEventListener('change', async (e) => {
+                const speed = parseFloat(e.target.value);
+                const enabled = document.getElementById('sim-mode-toggle').checked;
+                await this.setSimulationConfig(enabled, speed);
+            });
+        }
+    }
+
+    async setSimulationConfig(enabled, speed) {
+        try {
+            await fetch('/api/simulation/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled, speed })
+            });
+        } catch (e) { console.error(e); }
+    }
+
+    async initThresholdSlider() {
+        const slider = document.getElementById('threshold-slider');
+        const display = document.getElementById('threshold-value');
+
+        if (!slider || !display) return;
+
+        // Load current threshold from backend
+        try {
+            const res = await fetch('/api/strategy/threshold');
+            const data = await res.json();
+            if (data.threshold) {
+                slider.value = data.threshold;
+                display.textContent = data.threshold.toFixed(1);
+            }
+        } catch (e) {
+            console.error('Failed to load threshold:', e);
+        }
+
+        // Update display on slider move
+        slider.addEventListener('input', (e) => {
+            display.textContent = parseFloat(e.target.value).toFixed(1);
+        });
+
+        // Debounced API call on slider change
+        let timeout;
+        slider.addEventListener('change', async (e) => {
+            clearTimeout(timeout);
+            timeout = setTimeout(async () => {
+                const threshold = parseFloat(e.target.value);
+                try {
+                    await fetch(`/api/strategy/threshold?threshold=${threshold}`, {
+                        method: 'POST'
+                    });
+                    console.log(`✅ Threshold updated to ${threshold}`);
+                } catch (err) {
+                    console.error('Failed to update threshold:', err);
+                }
+            }, 300);
+        });
+    }
+
+
+    async initTimeframeControl() {
+        const select = document.getElementById('timeframe-select');
+        const display = document.getElementById('tf-value');
+
+        if (!select || !display) return;
+
+        // Load current timeframe
+        try {
+            const res = await fetch('/api/strategy/timeframe');
+            const data = await res.json();
+            if (data.timeframe) {
+                select.value = data.timeframe;
+                display.textContent = data.timeframe + 'm';
+            }
+        } catch (e) {
+            console.error('Failed to load timeframe:', e);
+        }
+
+        // Handle Change
+        select.addEventListener('change', async (e) => {
+            const minutes = parseInt(e.target.value);
+            display.textContent = minutes + 'm';
+
+            try {
+                const res = await fetch(`/api/strategy/timeframe?minutes=${minutes}`, { method: 'POST' });
+                const data = await res.json();
+
+                if (data.status === 'success') {
+                    console.log(`✅ Timeframe set to ${minutes}m`);
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (err) {
+                console.error('Failed to update timeframe:', err);
+            }
+        });
+    }
+
+    // Keep existing helpers
+    formatPrice(p) { return (p || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    getChangeClass(v) { return v > 0 ? 'text-green' : v < 0 ? 'text-red' : 'text-gray'; }
+
+    async testTrade() {
+        try {
+            const res = await fetch('/api/test_trade', { method: 'POST' });
+            const data = await res.json();
+
+            if (data.status === 'success') {
+                console.log('✅ Test trade created:', data.order);
+
+                // Immediately refresh orders to show in Activity Log
+                const ordersRes = await fetch('/api/orders');
+                const ordersData = await ordersRes.json();
+                if (ordersData.orders) {
+                    this.renderOrders(ordersData.orders);
+                }
+
+                alert(`🧪 Test trade created!\n${data.order.side} ${data.order.symbol}\nPrice: ₹${data.order.price}\nCheck Activity Log →`);
+            } else {
+                console.error('Test trade failed:', data.message);
+                alert(`❌ Test trade failed: ${data.message}`);
+            }
+        } catch (e) {
+            console.error('Test trade error:', e);
+            alert(`❌ Error: ${e.message}`);
+        }
+    }
+
+    startOrderSync() {
+        // Poll every 1s for immediate feedback
+        setInterval(async () => {
+            // 1. Fetch Orders
+            try {
+                const res = await fetch('/api/orders');
+                const data = await res.json();
+                if (data.orders) this.renderOrders(data.orders);
+            } catch (e) { console.error('Order sync error:', e); }
+
+            // 2. Fetch Positions
+            try {
+                const res = await fetch('/api/positions');
+                const data = await res.json();
+                if (data.positions) {
+                    this.renderPositions(data.positions);
+                    this.updateTotalPnl(data.total_pnl);
+                }
+            } catch (e) { console.error('Pos sync error:', e); }
+
+        }, 1000);
+    }
+
+    renderPositions(positions) {
+        if (!this.positionsTableBody) return;
+
+        const entries = Object.entries(positions);
+        if (entries.length === 0) {
+            this.positionsTableBody.innerHTML = '<tr><td colspan="9" class="empty-table">No active positions</td></tr>';
+            if (this.posCountBadge) this.posCountBadge.textContent = '0';
+            return;
+        }
+
+        if (this.posCountBadge) this.posCountBadge.textContent = entries.length;
+
+        this.positionsTableBody.innerHTML = entries.map(([key, p]) => {
+            // key is "SYMBOL:PRODUCT"
+            const symbol = p.symbol || key.split(':')[0];
+            const netQty = p.net_qty;
+            const avgPrice = p.avg_price;
+            const ltp = p.ltp || avgPrice; // Fallback
+            const realized = p.realized_pnl || 0;
+            const unrealized = (ltp - avgPrice) * netQty;
+            const totalPnl = realized + unrealized;
+            const invest = Math.abs(avgPrice * netQty);
+            const roi = invest > 0 ? (totalPnl / invest * 100) : 0;
+            const side = netQty > 0 ? "LONG" : (netQty < 0 ? "SHORT" : "CLOSED");
+
+            // value = ltp * qty
+            const value = Math.abs(ltp * netQty);
+
+            if (netQty === 0) return ''; // Skip closed positions in active table? Or show them? 
+            // Usually active positions implies non-zero. Let's filter non-zero.
+
+            return `
+                <tr>
+                    <td class="font-bold">${symbol}</td>
+                    <td class="${side === 'LONG' ? 'text-green' : 'text-red'}">${side}</td>
+                    <td>${netQty}</td>
+                    <td>${avgPrice.toFixed(2)}</td>
+                    <td>${ltp.toFixed(2)}</td>
+                    <td>${(value / 1000).toFixed(1)}k</td>
+                    <td class="${this.getChangeClass(roi)}">${roi.toFixed(1)}%</td>
+                    <td class="${this.getChangeClass(totalPnl)} font-bold">${totalPnl.toFixed(0)}</td>
+                    <td>
+                        <button onclick="window.priceGrid.trade('${symbol}', '${netQty > 0 ? 'SELL' : 'BUY'}', ${Math.abs(netQty)})" class="btn-xs btn-sell">EXIT</button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    updateTotalPnl(val) {
+        const el = document.getElementById('total-pnl');
+        if (el) {
+            el.textContent = `₹${(val || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+            el.className = `metric-value ${this.getChangeClass(val)}`;
+        }
+    }
+
+    renderOrders(orders) {
+        if (!this.ordersLog) return;
+        if (orders.length === 0) {
+            this.ordersLog.innerHTML = '<div class="empty-log">No recent activity</div>';
+            return;
+        }
+
+        this.ordersLog.innerHTML = orders.map(o => `
+            <div class="order-entry ${o.status === 'FILLED' ? 'complete' : o.status === 'REJECTED' ? 'rejected' : ''}">
+                <div>
+                   <span style="font-weight:600; color:#ddd">${o.symbol}</span>
+                   <div style="font-size:10px; color:#666">${o.status}</div>
+                </div>
+                <div style="text-align:right">
+                   <span class="${o.side === 'BUY' ? 'text-green' : 'text-red'} font-bold">${o.side}</span>
+                   <div style="font-size:10px">${o.qty} @ ${o.price}</div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    startStatsSync() {
+        // Keep syncing stats but update UI carefully
+        setInterval(async () => {
+            // ... fetch stats logic
+        }, 5000);
+    }
+
+    async loadConfig() { /* ... */ }
+
     async trade(symbol, side, qty) {
+        if (!confirm(`Confirm ${side} ${qty} ${symbol}?`)) return;
         if (!window.automation_test && !confirm(`Confirm ${side} ${qty} ${symbol}?`)) return;
 
         const product_type = this.productTypeEl ? this.productTypeEl.value : 'I';
@@ -771,10 +672,114 @@ class PriceGrid {
     }
 
     updateLatency(latency) {
-        this.latencyElement.textContent = latency + ' ms';
+        if (this.latencyElement) this.latencyElement.textContent = latency + ' ms';
+    }
+
+    updateWidgetHeader(symbol, data) {
+        const widget = this.widgets.get(symbol);
+        if (!widget) return;
+
+        // Update Trend
+        const trendEl = widget.querySelector('.header-trend');
+        if (trendEl && data.trend) trendEl.textContent = data.trend;
+
+        // Update Price
+        const priceEl = widget.querySelector('.header-price');
+        if (priceEl && data.ltp) priceEl.textContent = this.formatPrice(data.ltp);
+
+        // Update Change
+        const changeEl = widget.querySelector('.header-change');
+        if (changeEl && data.percent_change !== undefined) {
+            changeEl.textContent = `${data.percent_change.toFixed(2)}%`;
+            changeEl.className = `header-change ${this.getChangeClass(data.percent_change)}`;
+        }
+    }
+
+    addOptionRow(parent, symbol, data) {
+        const tbody = document.getElementById(`tbody-${parent}`);
+        if (!tbody || this.optionRows.has(symbol)) return;
+
+        const row = document.createElement('tr');
+        row.id = `opt-${symbol}`;
+        row.innerHTML = this.getOptionRowHTML(symbol, data);
+
+        tbody.appendChild(row);
+        this.optionRows.set(symbol, row);
+    }
+
+    updateOptionRow(symbol, data) {
+        const row = this.optionRows.get(symbol);
+        if (!row) return;
+        row.innerHTML = this.getOptionRowHTML(symbol, data);
+    }
+
+    getOptionRowHTML(symbol, data) {
+        // Extract type (C/P) and strike from symbol like INDUSINDBK27JAN26C900
+        const parsed = this.parseOptionSymbol(symbol);
+        const type = parsed.type;  // CE or PE
+        const strike = parsed.strike;
+        const ltp = data.ltp || 0;
+        const change = data.percent_change || 0;
+        const typeClass = type === 'CE' ? 'opt-call' : 'opt-put';
+        const changeSign = change >= 0 ? '+' : '';
+
+        return `
+            <td class="opt-strike-cell">
+                <span class="opt-strike-value">${strike}</span>
+            </td>
+            <td class="opt-type-cell">
+                <span class="opt-type-badge ${typeClass}">${type}</span>
+            </td>
+            <td class="opt-ltp">
+                <span class="ltp-value">₹${this.formatPrice(ltp)}</span>
+            </td>
+            <td class="opt-change ${this.getChangeClass(change)}">
+                ${changeSign}${change.toFixed(1)}%
+            </td>
+            <td class="actions-cell">
+                 <button onclick="window.priceGrid.trade('${symbol}', 'BUY', window.priceGrid.getLotSize('${symbol}'))" class="btn-xs btn-buy">BUY</button>
+                 <button onclick="window.priceGrid.trade('${symbol}', 'SELL', window.priceGrid.getLotSize('${symbol}'))" class="btn-xs btn-sell">SELL</button>
+            </td>
+        `;
+    }
+
+    parseOptionSymbol(symbol) {
+        // Parse symbols like: INDUSINDBK27JAN26C900 or BANKNIFTY27JAN26P60000
+        // Format: SYMBOL + EXPIRY + C/P + STRIKE
+        const match = symbol.match(/([CP])(\d+)$/i);
+        if (match) {
+            const typeChar = match[1].toUpperCase();
+            return {
+                type: typeChar === 'C' ? 'CE' : 'PE',
+                strike: match[2]
+            };
+        }
+        // Fallback
+        return { type: '??', strike: '---' };
+    }
+
+    extractStrike(symbol) {
+        return this.parseOptionSymbol(symbol).strike;
+    }
+
+    getLotSize(symbol) {
+        if (/\d/.test(symbol)) {
+            const input = document.getElementById('opt-lots');
+            const lots = input ? (parseInt(input.value) || 1) : 1;
+
+            let mult = 1;
+            if (symbol.includes('BANKNIFTY')) mult = 15;
+            else if (symbol.includes('NIFTY')) mult = 50;
+
+            return lots * mult;
+        } else {
+            const input = document.getElementById('stock-qty');
+            return input ? (parseInt(input.value) || 1) : 1;
+        }
     }
 
     startFpsCounter() {
+        if (!this.fpsElement) return;
         setInterval(() => {
             const now = Date.now();
             const elapsed = (now - this.lastFpsUpdate) / 1000;
@@ -787,37 +792,68 @@ class PriceGrid {
             this.lastFpsUpdate = now;
         }, 1000);
     }
+
+    // Helper methods
+    formatChange(change) {
+        const sign = change >= 0 ? '+' : '';
+        return `${sign}${change.toFixed(2)}`;
+    }
+
+    formatPercentChange(pct) {
+        const sign = pct >= 0 ? '+' : '';
+        return `${sign}${pct.toFixed(2)}%`;
+    }
+
+    handleOverscope(callback, ...args) {
+        try {
+            return callback(...args);
+        } catch (e) {
+            console.error('Overscope error:', e);
+            return '';
+        }
+    }
+
+    // Widget persistence
+    saveOpenWidgets() {
+        const openSymbols = Array.from(this.widgets.keys());
+        try {
+            localStorage.setItem('openWidgets', JSON.stringify(openSymbols));
+        } catch (e) {
+            console.error('Failed to save widgets:', e);
+        }
+    }
+
+    loadOpenWidgets() {
+        try {
+            const saved = localStorage.getItem('openWidgets');
+            return saved ? JSON.parse(saved) : null;
+        } catch (e) {
+            console.error('Failed to load widgets:', e);
+            return null;
+        }
+    }
 }
 
 // Initialize on page load
-// Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     console.log("🚀 Page Loaded. Initializing PriceGrid...");
-    try {
-        const grid = new PriceGrid();
-        window.priceGrid = grid; // Global access
 
-        // Status indicators
-        const statusIndicator = document.getElementById('status-indicator');
-        const statusText = document.getElementById('status-text');
+    // 1. Init PriceGrid (UI)
+    window.priceGrid = new PriceGrid();
+    const grid = window.priceGrid;
 
-        // Check WebSocket Class
-        if (typeof PriceWebSocket === 'undefined') {
-            console.error("❌ PriceWebSocket Class is NOT defined. Check websocket.js loading.");
-            if (statusText) statusText.textContent = "Script Error: websocket.js";
-            if (statusIndicator) statusIndicator.classList.add('disconnected');
-            return;
-        }
-
-        // Connect to WebSocket
-        const wsUrl = `ws://${window.location.host}/ws/prices`;
-        console.log(`🔌 Connecting to WebSocket: ${wsUrl}`);
+    // 2. Init WebSocket (Data Feed)
+    if (typeof PriceWebSocket !== 'undefined') {
+        // Use relative URL for WebSocket
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/prices`;
 
         const ws = new PriceWebSocket(wsUrl);
-        window.priceWS = ws; // Global access
 
         ws.onConnected = () => {
             console.log("✅ WebSocket Connected!");
+            const statusIndicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('status-text');
             if (statusIndicator) {
                 statusIndicator.classList.remove('disconnected');
                 statusIndicator.classList.add('connected');
@@ -827,6 +863,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         ws.onDisconnected = () => {
             console.log("⚠️ WebSocket Disconnected!");
+            const statusIndicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('status-text');
             if (statusIndicator) {
                 statusIndicator.classList.remove('connected');
                 statusIndicator.classList.add('disconnected');
@@ -835,22 +873,23 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         ws.onSnapshot = (data) => {
-            console.log('📦 Snapshot:', Object.keys(data).length, 'symbols');
             grid.loadSnapshot(data);
         };
 
         ws.onPriceUpdate = (symbol, data) => {
             grid.updatePrice(symbol, data);
+            grid.updateCount++; // Increment FPS counter
         };
 
         ws.onLatencyUpdate = (latency) => {
-            grid.updateLatency(latency);
+            if (grid.updateLatency) grid.updateLatency(latency);
         };
 
         ws.connect();
 
-    } catch (e) {
-        console.error("❌ Critical Initialization Error:", e);
-        alert("Dashboard Error: " + e.message);
+        // Expose for debugging
+        window.priceWS = ws;
+    } else {
+        console.error("❌ PriceWebSocket class not found! Check stylesheet inclusion.");
     }
 });

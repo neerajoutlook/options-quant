@@ -22,6 +22,7 @@ class PaperTrade:
     exit_time: Optional[str] = None
     exit_price: Optional[float] = None
     pnl: Optional[float] = None
+    symbol: Optional[str] = None
     status: str = "OPEN"  # OPEN, CLOSED
     
 class PaperTradingEngine:
@@ -34,7 +35,7 @@ class PaperTradingEngine:
         self.trades_file.parent.mkdir(exist_ok=True)
         
     def enter_position(self, signal_type: str, entry_price: float, strike: int, 
-                       quantity: int, reason: str) -> PaperTrade:
+                       quantity: int, reason: str, symbol: str = None) -> PaperTrade:
         """
         Simulate entering a position
         Assumes market order fills at signal price (simplified)
@@ -47,7 +48,8 @@ class PaperTradingEngine:
             entry_strike=strike,
             option_type=option_type,
             quantity=quantity,
-            entry_reason=reason
+            entry_reason=reason,
+            symbol=symbol
         )
         
         logger.info(f"📝 Paper Trade ENTRY: {option_type} {strike} @ ₹{entry_price:.2f}")

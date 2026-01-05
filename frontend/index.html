@@ -13,6 +13,8 @@
         <!-- Header -->
         <header class="header">
             <h1>Bank Nifty HFT Dashboard
+                <span class="mode-badge simulation" id="sim-mode-badge">🎮 SIMULATION</span>
+                <span class="mode-badge paper" id="paper-mode-badge">📄 PAPER</span>
                 <span id="global-mode-badge" class="mode-badge">PAPER</span>
                 <span id="ai-signal" class="ai-signal-badge">AI: --</span>
                 <div id="strategy-badges" class="strategy-badges">
@@ -28,7 +30,7 @@
                         <input type="checkbox" id="auto-trade-toggle">
                         <span class="slider round"></span>
                     </label>
-                    <span id="auto-trade-status" class="mode-status">OFF</span>
+                    <span id="auto-trade-status" class="toggle-state-label off">OFF</span>
                 </div>
                 <div class="mode-toggle-container">
                     <span class="mode-label">Mode:</span>
@@ -36,7 +38,7 @@
                         <input type="checkbox" id="mode-toggle">
                         <span class="slider round"></span>
                     </label>
-                    <span id="mode-status" class="mode-status">Paper</span>
+                    <span id="mode-status" class="toggle-state-label off">Paper</span>
                 </div>
                 <div class="qty-controls">
                     <label>Product:
@@ -49,8 +51,8 @@
                     <label>Stock Qty: <input type="number" id="qty-stock" value="1" min="1"></label>
                     <label>Opt Lots: <input type="number" id="qty-option" value="1" min="1"></label>
                 </div>
-                <button id="btn-panic" class="btn-panic" onclick="window.priceGrid.panicExit()">🔥 PANIC EXIT
-                    ALL</button>
+                <button class="btn-panic" onclick="window.priceGrid?.panicExit()">⚠️ PANIC EXIT ALL</button>
+                <button class="btn-test-trade" onclick="window.priceGrid?.testTrade()">🧪 Test Trade</button>
             </div>
             <div class="connection-status">
                 <span id="status-indicator" class="status-dot disconnected"></span>
@@ -58,102 +60,133 @@
             </div>
         </header>
 
-        <!-- Main Index Card -->
-        <div class="index-card">
-            <div class="index-name">BANKNIFTY</div>
-            <div class="index-price" id="banknifty-price">--</div>
-            <div class="index-change" id="banknifty-change">
-                <span class="change-value">--</span>
-                <span class="change-percent">(--)</span>
-            </div>
-            <div class="last-update">Last: <span id="last-update">--</span></div>
-        </div>
-
         <div class="main-layout">
-            <!-- Sidebar: Orders & Logs -->
-            <aside class="sidebar">
-                <div class="sidebar-header">
-                    <div class="header-row">
-                        <h2>Orders & Activity</h2>
-                        <span id="order-count" class="badge">0</span>
-                    </div>
-                    <div class="history-controls">
-                        <input type="date" id="history-date" class="date-picker">
-                        <button id="btn-clear-history" class="btn-clear" title="Clear for selected date">🗑️
-                            Clear</button>
-                    </div>
+            <!-- Left Column: Market Watch -->
+            <aside class="col-left market-watch">
+                <div class="col-header">
+                    <span>📊 MARKET WATCH</span>
                 </div>
-
-                <!-- Simulation Controls -->
-                <div class="sim-controls-panel">
-                    <div class="sim-header">
-                        <h3>Simulation</h3>
-                        <label class="switch">
-                            <input type="checkbox" id="sim-mode-toggle">
-                            <span class="slider round"></span>
-                        </label>
-                    </div>
-                    <div id="sim-speed-controls" class="sim-speed-controls hidden">
-                        <label>Speed:</label>
-                        <div class="speed-options">
-                            <label><input type="radio" name="sim-speed" value="1.0"> 1x</label>
-                            <label><input type="radio" name="sim-speed" value="5.0"> 5x</label>
-                            <label><input type="radio" name="sim-speed" value="10.0"> 10x</label>
-                        </div>
-                    </div>
+                <div class="market-tabs">
+                    <button class="tab-btn active" onclick="window.priceGrid.switchTab('bears')">🐻 Bears</button>
+                    <button class="tab-btn" onclick="window.priceGrid.switchTab('bulls')">🐂 Bulls</button>
                 </div>
-
-                <div id="orders-log" class="orders-log">
-                    <div class="empty-log">No recent orders</div>
+                <div id="market-list" class="market-list-container">
+                    <!-- Dynamic Content -->
                 </div>
             </aside>
 
-            <!-- Main Dashboard Terminal -->
-            <main class="dashboard-terminal">
-                <!-- Left: Bears -->
-                <div class="terminal-column bears-col">
-                    <div class="col-header bearish">🐻 BEARS (Laggards)</div>
-                    <div id="bears-list" class="column-list">
-                        <!-- Bearish stocks injected here -->
+            <!-- Center Column: Command Deck -->
+            <main class="col-center command-deck">
+                <!-- Index Overview -->
+                <div class="index-overview">
+                    <div class="index-card">
+                        <div class="index-header">BANKNIFTY</div>
+                        <div class="index-price big" id="banknifty-price">--</div>
+                        <div class="index-change" id="banknifty-change">--</div>
                     </div>
+                    <!-- Placeholder for Nifty if needed later -->
                 </div>
 
-                <!-- Center: Active Trades -->
-                <div class="terminal-column center-col">
-                    <div class="col-header trades">⚡ ACTIVE TRADES & CONTROL</div>
-                    <div id="positions-table-container" class="trades-table-container">
+
+
+                <!-- Active Trades (Expanded) -->
+                <div class="active-trades-panel">
+                    <div class="panel-header">
+                        <span>⚡ ACTIVE POSITIONS</span>
+                        <span id="pos-count" class="badge">0</span>
+                    </div>
+                    <div class="trades-table-container">
                         <table class="trades-table">
                             <thead>
                                 <tr>
-                                    <th>TIME</th>
                                     <th>SYMBOL</th>
                                     <th>SIDE</th>
                                     <th>QTY</th>
-                                    <th>ENTRY</th>
+                                    <th>AVG</th>
                                     <th>LTP</th>
+                                    <th>VAL</th>
+                                    <th>ROI%</th>
                                     <th>P&L</th>
+                                    <th>ACT</th>
                                 </tr>
                             </thead>
                             <tbody id="positions-table-body">
                                 <tr>
-                                    <td colspan="7" class="empty-table">No active trades</td>
+                                    <td colspan="9" class="empty-table">No active positions</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
-
-                    <!-- Market Pulse / Info -->
-                    <div id="widget-grid" class="widget-grid" style="display:none;"></div>
                 </div>
 
-                <!-- Right: Bulls -->
-                <div class="terminal-column bulls-col">
-                    <div class="col-header bullish">🐂 BULLS (Leaders)</div>
-                    <div id="bulls-list" class="column-list">
-                        <!-- Bullish stocks injected here -->
-                    </div>
+                <!-- Algo Status / Widget Grid -->
+                <div id="widget-grid" class="widget-grid">
+                    <!-- Options Data Grid -->
                 </div>
             </main>
+
+            <!-- Right Column: Activity & Logs -->
+            <aside class="col-right activity-log">
+                <div class="col-header">
+                    <span>📜 ACTIVITY LOG</span>
+                </div>
+
+                <!-- Improved Simulation Controls -->
+                <div class="sim-controls-panel">
+                    <div class="sim-header">
+                        <span class="sim-label">SIMULATOR</span>
+                        <label class="switch small">
+                            <input type="checkbox" id="sim-mode-toggle">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                    <div id="sim-speed-controls" class="sim-speed-controls">
+                        <label>Speed:</label>
+                        <div class="speed-range">
+                            <input type="range" min="1" max="10" step="1" value="1" id="sim-speed-range"
+                                oninput="document.getElementById('speed-val').innerText = this.value + 'x'">
+                            <span id="speed-val">1x</span>
+                        </div>
+                    </div>
+                    <!-- Moved Strategy Threshold Control -->
+                    <div class="threshold-control">
+                        <div class="control-header">
+                            <span>🎯 Threshold</span>
+                            <span id="threshold-value" class="threshold-display">2.5</span>
+                        </div>
+                        <input type="range" id="threshold-slider" min="0.5" max="5.0" step="0.1" value="2.5"
+                            class="threshold-slider">
+                        <div class="threshold-labels-compact">
+                            <span>0.5</span>
+                            <span>5.0</span>
+                        </div>
+                    </div>
+
+                    <!-- Timeframe Control -->
+                    <div class="timeframe-control"
+                        style="margin-top: 12px; border-top: 1px dashed #222; padding-top: 12px;">
+                        <div class="control-header">
+                            <span>⏱️ Timeframe</span>
+                            <span id="tf-value" class="threshold-display" style="font-size: 14px;">5m</span>
+                        </div>
+                        <select id="timeframe-select" class="product-select" style="width: 100%;">
+                            <option value="1">1 Minute</option>
+                            <option value="3">3 Minutes</option>
+                            <option value="5" selected>5 Minutes</option>
+                            <option value="15">15 Minutes</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="history-controls">
+                    <span class="log-title">Today's Orders</span>
+                    <button id="btn-clear-history" class="btn-icon" title="Clear History">🗑️</button>
+                </div>
+
+                <div id="orders-log" class="orders-log">
+                    <div class="empty-log">No recent activity</div>
+                </div>
+            </aside>
         </div>
 
         <!-- Performance Metrics -->
@@ -181,8 +214,13 @@
         </footer>
     </div>
 
-    <script src="/static/js/websocket.js"></script>
-    <script src="/static/js/price-grid.js"></script>
+    <script>
+        console.log("🔍 INLINE SCRIPT TEST - If you see this, JavaScript works!");
+        console.log("🔍 Location:", window.location.href);
+        console.log("🔍 Ready State:", document.readyState);
+    </script>
+    <script src="/static/js/websocket.js?v=1767633200"></script>
+    <script src="/static/js/price-grid.js?v=1767633200"></script>
 </body>
 
 </html>

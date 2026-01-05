@@ -74,10 +74,12 @@ class MarketSimulator:
                 for sym, price in first_prices.items():
                     token = self.token_map.get(sym)
                     if token:
-                        self.prices[token] = price
-                        # Set Open and PrevClose to this initial price to avoid jump artifacts
-                        self.open_prices[token] = price
-                        self.prev_closes[token] = price # Start with 0% change
+                        # Only set direct price if NOT an option
+                        if token not in self.option_metadata:
+                            self.prices[token] = price
+                            # Set Open and PrevClose to this initial price to avoid jump artifacts
+                            self.open_prices[token] = price
+                            self.prev_closes[token] = price # Start with 0% change
                 
                 logger.info(f"Initialized Simulator Prices from {first_ts}")
                 

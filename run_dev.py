@@ -6,6 +6,17 @@ from watchfiles import run_process
 
 def run_app():
     """Run the main application script."""
+    # Kill any existing process on port 8001
+    try:
+        print("🧹 Cleaning up port 8001...")
+        subprocess.run(
+            "lsof -ti:8001 | xargs kill -9 2>/dev/null || true",
+            shell=True,
+            check=False
+        )
+    except Exception as e:
+        print(f"⚠️ Port cleanup warning: {e}")
+    
     # Use the same python interpreter as this script
     python = sys.executable
     cmd = [python, "launch_web.py"]

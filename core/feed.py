@@ -31,8 +31,13 @@ class TickEngine:
         self.shoonya = ShoonyaSession()
         self.telegram = TelegramBot()
         
-        self.resampler_3m = CandleResampler(interval_minutes=3)
-        self.resampler_5m = CandleResampler(interval_minutes=5)
+        self.resamplers = {
+            1: CandleResampler(interval_minutes=1),
+            3: CandleResampler(interval_minutes=3),
+            5: CandleResampler(interval_minutes=5),
+            15: CandleResampler(interval_minutes=15)
+        }
+        self.active_timeframe = 5 # Default 5 minutes
         
         self.weightage_calc = WeightageCalculator(use_volume=config.USE_VOLUME_WEIGHTING)
         self.strategy = Strategy(
@@ -41,7 +46,7 @@ class TickEngine:
             min_hold_time=config.MIN_SIGNAL_HOLD_TIME,
             min_confirmation=config.MIN_SIGNAL_CONFIRMATION
         )
-        
+
         # OMS Initialization
         self.position_manager = PositionManager()
         self.order_manager = OrderManager(self.shoonya, self.position_manager)
@@ -51,6 +56,7 @@ class TickEngine:
         
         self.token_map: Dict[str, str] = {} # Symbol -> Token
         self.reverse_token_map: Dict[str, str] = {} # Token -> Symbol
+        self.option_metadata: Dict[str, Dict] = {} # Token -> {type, strike, underlying}
         
         from core.instruments import InstrumentManager
         self.instrument_mgr = InstrumentManager()
@@ -77,13 +83,19 @@ class TickEngine:
             # Load states from DB
             db_auto = self.db.get_state("auto_trading_enabled")
             if db_auto is not None:
-                self.auto_trading_enabled = (db_auto == "True")
+                # Handle both string "True" and boolean True
+                self.auto_trading_enabled = str(db_auto).lower() == "true"
+                logger.info(f"🔄 Loaded Auto-Trade State: {self.auto_trading_enabled}")
                 
             db_paper = self.db.get_state("paper_trading_mode")
             if db_paper is not None:
-                config.PAPER_TRADING_MODE = (db_paper == "True")
+                config.PAPER_TRADING_MODE = str(db_paper).lower() == "true"
+            
+            db_tf = self.db.get_state("strategy_timeframe")
+            if db_tf is not None:
+                 self.active_timeframe = int(db_tf)
                 
-            logger.info(f"💾 TickEngine loaded history (Auto: {self.auto_trading_enabled}, Paper: {config.PAPER_TRADING_MODE}).")
+            logger.info(f"💾 TickEngine loaded history (Auto: {self.auto_trading_enabled}, Paper: {config.PAPER_TRADING_MODE}, TF: {self.active_timeframe}m).")
         except Exception as e:
             logger.error(f"Failed to initialize TickEngine DB: {e}")
             self.db = None
@@ -203,8 +215,9 @@ class TickEngine:
         # Subscribe List
         instruments = []
 
-        # Load historical data context if needed (to warm up indicators)
-        # self._seed_history()
+        # Seed historical data for live mode (populates UI with last known prices when market is closed)
+        if not config.SIMULATION_MODE and not self.offline:
+            self._seed_history()
 
         # Fetch Macro Data (Background update) - This should run regardless of sim/live mode
         threading.Thread(target=self._update_macro_data).start()
@@ -224,16 +237,15 @@ class TickEngine:
             logger.info(f"Starting Simulator Mode (Speed: {config.SIMULATION_SPEED}x)")
             from core.simulator import MarketSimulator
             
-            option_metadata = {}
+            # Use self.option_metadata which will be populated dynamically via _subscribe_atm_options
+            # or populated below if token map is sparse.
             
             # Mock tokens for all constituents if offline/sim mode
-            # Ideally we should do this if token_map is minimal (e.g. only contains hardcoded indices)
-            # or if we are purely offline.
             if not self.token_map or len(self.token_map) < 5:
                 logger.info("Mocking tokens for Simulation")
                 self.token_map = {
-                    "26000": "NIFTY",
-                    "26009": "BANKNIFTY",
+                    "NIFTY": "26000",
+                    "BANKNIFTY": "26009",
                 }
                 self.reverse_token_map = {
                     "26000": "NIFTY",
@@ -248,7 +260,6 @@ class TickEngine:
                     self.reverse_token_map[token] = sym
                 
                 # Generate Mock Options for BANKNIFTY
-                # Spot approx 48000
                 spot_ref = 48000
                 strikes = range(spot_ref - 500, spot_ref + 600, 100)
                 
@@ -258,7 +269,7 @@ class TickEngine:
                     ce_token = f"4{strike}CE"
                     self.token_map[ce_sym] = ce_token
                     self.reverse_token_map[ce_token] = ce_sym
-                    option_metadata[ce_token] = {
+                    self.option_metadata[ce_token] = {
                         "type": "CE", "strike": strike, "underlying": "BANKNIFTY"
                     }
                     
@@ -267,16 +278,16 @@ class TickEngine:
                     pe_token = f"4{strike}PE"
                     self.token_map[pe_sym] = pe_token
                     self.reverse_token_map[pe_token] = pe_sym
-                    option_metadata[pe_token] = {
+                    self.option_metadata[pe_token] = {
                         "type": "PE", "strike": strike, "underlying": "BANKNIFTY"
                     }
                 
-                logger.info(f"Generated {len(option_metadata)} Mock Options.")
+                logger.info(f"Generated {len(self.option_metadata)} Mock Options.")
             
             self.simulator = MarketSimulator(
                 self.token_map, 
                 self.on_tick, 
-                option_metadata=option_metadata, 
+                option_metadata=self.option_metadata, 
                 speed=config.SIMULATION_SPEED
             )
             self.simulator.start()
@@ -341,6 +352,14 @@ class TickEngine:
         self.shoonya.close_websocket()
         logger.info("TickEngine stopped.")
 
+    def set_timeframe(self, minutes: int):
+        """Set the active trading timeframe"""
+        if minutes in self.resamplers:
+            self.active_timeframe = minutes
+            logger.info(f"⏳ Timeframe switched to {minutes}-minute candles")
+            return True
+        return False
+
     def on_tick(self, tick: dict):
         """Handle incoming tick."""
         # tick format: {'t': 'tk', 'e': 'NSE', 'tk': '1234', 'lp': '100.5', 'v': '1000', ...}
@@ -354,7 +373,12 @@ class TickEngine:
             
         price = float(tick.get('lp', 0))
         volume = int(tick.get('v', 0)) # This might be cumulative volume
-        timestamp = datetime.now(IST) # Use IST
+        
+        # Use Feed Time if available (Critical for Simulation/Backtest), else System Time
+        if 'ft' in tick:
+            timestamp = datetime.fromtimestamp(float(tick['ft']), IST)
+        else:
+            timestamp = datetime.now(IST)
         
         if price == 0:
             return
@@ -462,14 +486,13 @@ class TickEngine:
 
         # Update Bank Nifty Candles & Run Strategy
         if symbol == "BANKNIFTY":
-            # Update Resamplers
-            c3 = self.resampler_3m.process_tick(price, volume, timestamp)
-            c5 = self.resampler_5m.process_tick(price, volume, timestamp)
-            
-            if c3:
-                logger.info(f"3-min Candle Closed: {c3}")
-            if c5 and c5.complete:
-                logger.info(f"5-min Candle Closed: {c5}")
+            # Update Active Resampler
+            resampler = self.resamplers.get(self.active_timeframe)
+            if resampler:
+                candle = resampler.process_tick(price, volume, timestamp)
+                
+                if candle and candle.complete:
+                    logger.info(f"🕯️ {self.active_timeframe}-min Candle Closed: {candle}")
             
             # Calculate weighted strength
             strength = self.weightage_calc.calculate_weighted_strength()
@@ -559,6 +582,11 @@ class TickEngine:
                     self.shoonya.subscribe(f'NFO|{token}')
                     self.token_map[tsym] = token
                     self.reverse_token_map[token] = tsym
+                    self.option_metadata[token] = {
+                        'type': 'CE',
+                        'strike': strike,
+                        'underlying': symbol
+                    }
                     
                 # Subscribe PE
                 if 'PE' in options:
@@ -569,12 +597,93 @@ class TickEngine:
                     self.shoonya.subscribe(f'NFO|{token}')
                     self.token_map[tsym] = token
                     self.reverse_token_map[token] = tsym
+                    self.option_metadata[token] = {
+                        'type': 'PE',
+                        'strike': strike,
+                        'underlying': symbol
+                    }
             else:
                 logger.warning(f"No options found in master file for {symbol} {strike}")
 
         except Exception as e:
             logger.error(f"ATM Sub Error {symbol}: {e}")
 
+    def _seed_atm_options(self, symbol: str, strike: float):
+        """Seed ATM options with historical data (for live mode with no ticks)"""
+        try:
+            # Get option tokens
+            options = self.instrument_mgr.get_atm_option_tokens(symbol, strike, api=self.shoonya)
+            
+            if not options:
+                logger.warning(f"No options found for {symbol} {strike}")
+                return
+            
+            from core.market_data import market_data
+            from datetime import timedelta
+            
+            now_ist = datetime.now(IST)
+            start_time = now_ist - timedelta(days=3)
+            
+            for opt_type in ['CE', 'PE']:
+                if opt_type not in options:
+                    continue
+                    
+                opt = options[opt_type]
+                token = opt['token']
+                tsym = opt['tsym']
+                
+                # Register in maps
+                self.token_map[tsym] = token
+                self.reverse_token_map[token] = tsym
+                self.option_metadata[token] = {
+                    'type': opt_type,
+                    'strike': strike,
+                    'underlying': symbol
+                }
+                
+                # Fetch historical data for this option
+                try:
+                    history = self.shoonya.get_history(
+                        exchange="NFO", 
+                        token=token, 
+                        start_time=start_time.timestamp(), 
+                        interval=1
+                    )
+                    
+                    if history and isinstance(history, list) and len(history) > 0:
+                        # Get last candle
+                        last_candle = history[-1]
+                        ltp = float(last_candle.get('intc', 0))
+                        
+                        if ltp > 0:
+                            payload = {
+                                'symbol': tsym,
+                                'ltp': ltp,
+                                'volume': int(last_candle.get('intv', 0)),
+                                'open': float(last_candle.get('into', 0)),
+                                'high': float(last_candle.get('inth', 0)),
+                                'low': float(last_candle.get('intl', 0)),
+                                'change': 0.0,
+                                'percent_change': 0.0,
+                                'vwap': ltp,
+                                'trend': 'NEUTRAL',
+                                'macro': {},
+                                'ai_signal': None,
+                                'timestamp': datetime.now(IST).isoformat()
+                            }
+                            market_data.latest_prices[tsym] = payload
+                            logger.info(f"✅ Seeded {opt_type}: {tsym} @ {ltp}")
+                    else:
+                        logger.warning(f"No history for option {tsym}")
+                        
+                except Exception as e:
+                    logger.error(f"Error fetching option history {tsym}: {e}")
+                    
+                # Small delay to avoid rate limiting
+                time.sleep(0.2)
+                
+        except Exception as e:
+            logger.error(f"Seed ATM Options Error {symbol}: {e}")
 
     def _seed_history(self):
         """Fetch historical data to populate 'latest_prices' before first tick."""
@@ -707,6 +816,22 @@ class TickEngine:
 
         except Exception as e:
             logger.error(f"Error seeding history: {e}", exc_info=True)
+        
+        # Seed ATM Options for all tracked stocks (for live mode with no ticks)
+        logger.info("⏳ Seeding ATM options for all stocks...")
+        from core.market_data import market_data
+        for symbol in self.tracked_stocks:
+            try:
+                price_data = market_data.latest_prices.get(symbol, {})
+                ltp = price_data.get('ltp', 0)
+                if ltp > 0:
+                    # Calculate ATM strike and subscribe to options
+                    atm_strike = self.instrument_mgr.calculate_atm_strike(symbol, ltp)
+                    if atm_strike:
+                        logger.info(f"Seeding options for {symbol} @ ATM {atm_strike}")
+                        self._seed_atm_options(symbol, atm_strike)
+            except Exception as e:
+                logger.error(f"Error seeding options for {symbol}: {e}")
             
         # FINAL FALLBACK: If BANKNIFTY is missing from UI, force dummy data
         from core.market_data import market_data
@@ -1022,14 +1147,15 @@ class TickEngine:
             self.auto_trading_enabled = False
             if self.db: self.db.save_state("auto_trading_enabled", "False")
             
-        # 2. Time-Based Exit
-        now_time = datetime.now(IST).strftime("%H:%M")
-        if now_time >= config.AUTO_EXIT_TIME:
-             logger.info(f"⏰ AUTO-EXIT TIME reached ({now_time}). Closing all.")
-             self.telegram.send_message(f"⏰ **AUTO-EXIT TIME REACHED ({now_time})**\nSquaring off all positions.")
-             self.execute_signal(Signal("EXIT", "BANKNIFTY", 0, "Time-Based Exit", time.time()))
-             self.auto_trading_enabled = False
-             if self.db: self.db.save_state("auto_trading_enabled", "False")
+        # 2. Time-Based Exit (Skip in Simulation Mode)
+        if not config.SIMULATION_MODE:
+            now_time = datetime.now(IST).strftime("%H:%M")
+            if now_time >= config.AUTO_EXIT_TIME:
+                 logger.info(f"⏰ AUTO-EXIT TIME reached ({now_time}). Closing all.")
+                 self.telegram.send_message(f"⏰ **AUTO-EXIT TIME REACHED ({now_time})**\nSquaring off all positions.")
+                 self.execute_signal(Signal("EXIT", "BANKNIFTY", 0, "Time-Based Exit", time.time()))
+                 self.auto_trading_enabled = False
+                 if self.db: self.db.save_state("auto_trading_enabled", "False")
 
     def _get_option_symbol(self, option_type: str, strike: int) -> str:
         """Helper to construct Bank Nifty option symbol for current monthly expiry."""
@@ -1054,18 +1180,34 @@ class TickEngine:
         expiry_str = expiry_date.strftime("%d%b%y").upper()
         return f"BANKNIFTY{expiry_str}{option_type}{strike}"
 
-    def _place_order_internal(self, symbol: str, action: str, signal_price: float, tag: str, signal_type: str):
+    def _place_order_internal(self, symbol: str, action: str, strike: float, tag: str, signal_type: str):
         """Internal helper for consistent order placement and logging"""
         lot_size = self.instrument_mgr.get_lot_size("BANKNIFTY")
         qty = config.QUANTITY * lot_size
         
-        logger.info(f"[{tag}] Attempting {action} {qty} {symbol}")
-        log_order_attempt(action, symbol, qty, 0) # Strike placeholder
+        # Get actual option price from market data
+        option_price = 0.0
+        p_data = market_data.latest_prices.get(symbol)
+        if p_data:
+            option_price = p_data.get('ltp', 0.0)
+        
+        # Fallback if no price yet (e.g. first tick of session)
+        if option_price == 0:
+            logger.warning(f"No market price for {symbol}, using dummy fallback 100.0")
+            option_price = 100.0
+
+        logger.info(f"[{tag}] Attempting {action} {qty} {symbol} at estimated {option_price}")
+        log_order_attempt(action, symbol, qty, strike)
 
         if config.PAPER_TRADING_MODE or self.offline:
-            # Paper Entry Logic
-            self.paper_trading.enter_position(signal_type, signal_price, 0, qty, f"[{tag}] {signal_type}")
-            msg = f"📝 PAPER {tag}: {action} {qty} {symbol} @ ₹{signal_price:.2f}"
+            # Paper Entry Logic (Persist to JSON for history)
+            self.paper_trading.enter_position(signal_type, option_price, strike, qty, f"[{tag}] {signal_type}", symbol=symbol)
+            
+            # Sync with Position Manager for UI (Real-time P&L tracking)
+            pm_side = "BUY" if action == "B" else "SELL"
+            self.position_manager.on_fill(symbol, qty, option_price, pm_side)
+            
+            msg = f"📝 PAPER {tag}: {action} {qty} {symbol} @ ₹{option_price:.2f}"
             logger.info(msg)
             self.telegram.send_message(msg)
             return
@@ -1103,7 +1245,16 @@ class TickEngine:
                 
                 if config.PAPER_TRADING_MODE or self.offline:
                     pnl = self.paper_trading.exit_position(signal.price, signal.reason)
-                    msg = f"📝 PAPER EXIT: {symbol} P&L: ₹{pnl:.2f}"
+                    
+                    # Sync with Position Manager for UI
+                    # Action is "S" (Sell to close Long) or "B" (Buy to close Short)
+                    pm_side = "BUY" if action == "B" else "SELL"
+                    self.position_manager.on_fill(symbol, qty, signal.price, pm_side)
+                    
+                    if pnl is not None:
+                        msg = f"📝 PAPER EXIT: {symbol} P&L: ₹{pnl:.2f}"
+                    else:
+                        msg = f"📝 PAPER EXIT: {symbol} (Already Closed/not found)"
                 else:
                     order_id = self.shoonya.place_order(
                         buy_or_sell=action, product_type=product, exchange="NFO",
@@ -1149,4 +1300,4 @@ class TickEngine:
 
         for order in orders:
             symbol = self._get_option_symbol(order['type'], order['strike'])
-            self._place_order_internal(symbol, "B", signal.price, order['tag'], signal.type)
+            self._place_order_internal(symbol, "B", order['strike'], order['tag'], signal.type)
