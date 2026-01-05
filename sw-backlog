@@ -5,4 +5,6 @@
 * Show IST times and use IST timezone for all times
 * Price should fluctuate as per market historical data so we get near real time data
 
-QO-002: dsfs
+How should be do back testing on the real data to know if the strategy would work or need tuning or etc? where to get data, does shoonya have then store it in db for historical data, and use it? or how? 
+
+QO-002: New UX rewamped 
