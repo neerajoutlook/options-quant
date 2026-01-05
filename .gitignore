@@ -1,1 +1,50 @@
+# Environment
 .env
+.env.local
+.env.*.local
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Database files
+*.db
+data/trading_state.db
+data/*.db
+
+# Logs
+logs/*.log
+logs/*.json
+*.log
+
+# Debug files
+debug_*.txt
+
+# Test output
+test_output.log
+backtest_results.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data files (large files, downloaded instrumentsm historical data)
+data/history/
+data/*.txt
+
+# Agent/artifacts
+.gemini/
