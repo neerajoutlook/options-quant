@@ -376,6 +376,9 @@ class TickEngine:
                         logger.warning(f"AUTO-TSL: Breach detected for {sym}. Triggering EXIT.")
                         tsl_signal = Signal("EXIT", sym, price, "Trailing Stop Loss Breach", timestamp.timestamp())
                         self.execute_signal(tsl_signal)
+                
+                # Check for Hard Stops (Daily Loss / Time)
+                self._check_safety_limits()
             
             if signal:
                 logger.info(f"SIGNAL GENERATED: {signal}")
@@ -884,261 +887,144 @@ class TickEngine:
         
         return signal
 
-    def execute_signal(self, signal):
-        """Execute the signal by placing an order for Bank Nifty options."""
-        logger.info(f"EXECUTING {signal.type} @ {signal.price}")
+    def _check_safety_limits(self):
+        """Monitor daily P&L and time to enforce hard stops."""
+        if not self.auto_trading_enabled: return
         
-        # Get current Bank Nifty price
-        current_price = signal.price
-        
-        # Calculate weighted strength for strike selection
-        strength = abs(self.weightage_calc.calculate_weighted_strength())
-        
-        # Smart Strike Selection based on signal strength
-        # Goal: ~50% probability (Delta ~0.5) with leverage on strong signals
-        
-        base_atm = round(current_price / 100) * 100  # ATM strike
-        
-        if signal.type in ["BUY_CE", "BUY_PE"]:
-            # For entry signals, select strike based on strength
-            if strength > 8.0:
-                # Very strong signal: Go 2 strikes OTM for better leverage
-                # Delta ~0.40-0.45, probability ~45%
-                offset = 200
-            elif strength > 6.5:
-                # Strong signal: Go 1 strike OTM
-                # Delta ~0.45-0.48, probability ~47%
-                offset = 100
-            else:
-                # Moderate signal: ATM for higher probability
-                # Delta ~0.50, probability ~50%
-                offset = 0
+        # 1. Daily Loss Limit
+        total_pnl = self.position_manager.realized_pnl + self.position_manager.update_pnl(market_data.latest_prices)
+        if total_pnl <= -config.MAX_DAILY_LOSS:
+            logger.warning(f"🔥 HARD STOP: Daily Loss {total_pnl:.2f} reached limit {config.MAX_DAILY_LOSS}.")
+            self.telegram.send_message(f"🚨 **HARD STOP ACTIVATED**\nDaily Loss: ₹{total_pnl:.2f}\nSHUTTING DOWN AUTO-TRADING.")
+            self.execute_signal(Signal("EXIT", "BANKNIFTY", 0, "Daily Loss Limit", time.time()))
+            self.auto_trading_enabled = False
+            if self.db: self.db.save_state("auto_trading_enabled", "False")
             
-            # Apply offset in correct direction
-            if "CE" in signal.type:
-                strike = base_atm + offset  # OTM Call above current price
-            else:
-                strike = base_atm - offset  # OTM Put below current price
-                
-            logger.info(f"Strike Selection: Strength={strength:.2f}, Base ATM={base_atm}, Offset={offset}, Selected={strike}")
-        else:
-            # For EXIT, use same strike we entered (stored in current_symbol)
-            # Extract strike from stored symbol
-            if self.current_symbol and "BANKNIFTY" in self.current_symbol:
-                # Extract strike from symbol like "BANKNIFTY30DEC25C59600"
-                match = re.search(r'[CP](\d+)$', self.current_symbol)
-                if match:
-                    strike = int(match.group(1))
-                    logger.info(f"EXIT using entry strike: {strike}")
-                else:
-                    strike = base_atm
-                    logger.warning("Could not extract strike from stored symbol, using ATM")
-            else:
-                strike = base_atm
-                logger.warning("No stored symbol for exit, using ATM")
-        
-        # Determine option type  (C for Call, P for Put - NOT CE/PE!)
-        option_type = "C" if "CE" in signal.type else "P"
-        
-        # Get current month's expiry date (last Wednesday)
+        # 2. Time-Based Exit
+        now_time = datetime.now(IST).strftime("%H:%M")
+        if now_time >= config.AUTO_EXIT_TIME:
+             logger.info(f"⏰ AUTO-EXIT TIME reached ({now_time}). Closing all.")
+             self.telegram.send_message(f"⏰ **AUTO-EXIT TIME REACHED ({now_time})**\nSquaring off all positions.")
+             self.execute_signal(Signal("EXIT", "BANKNIFTY", 0, "Time-Based Exit", time.time()))
+             self.auto_trading_enabled = False
+             if self.db: self.db.save_state("auto_trading_enabled", "False")
+
+    def _get_option_symbol(self, option_type: str, strike: int) -> str:
+        """Helper to construct Bank Nifty option symbol for current monthly expiry."""
         import calendar
+        from datetime import datetime
         
         today = datetime.now()
-        year = today.year
-        month = today.month
+        year, month = today.year, today.month
         
-        # Find last Wednesday of current month
-        # Get number of days in month
-        last_day = calendar.monthrange(year, month)[1]
-        
-        # Check each day from end of month backwards
-        for day in range(last_day, 0, -1):
-            date = datetime(year, month, day)
-            if date.weekday() == 2:  # Wednesday is 2
-                expiry_date = date
-                break
-        
-        # If today is after monthly expiry, get next month's expiry
+        # Find last Wednesday
+        def get_last_wednesday(y, m):
+            last_day = calendar.monthrange(y, m)[1]
+            for d in range(last_day, 0, -1):
+                if datetime(y, m, d).weekday() == 2: return datetime(y, m, d)
+            return None
+
+        expiry_date = get_last_wednesday(year, month)
         if today > expiry_date or (today.date() == expiry_date.date() and today.hour >= 15):
-            # Move to next month
-            if month == 12:
-                year += 1
-                month = 1
-            else:
-                month += 1
-            
-            last_day = calendar.monthrange(year, month)[1]
-            for day in range(last_day, 0, -1):
-                date = datetime(year, month, day)
-                if date.weekday() == 2:
-                    expiry_date = date
-                    break
-        
-        # Format: BANKNIFTY25DEC24C51500 (use C/P not CE/PE!)
+            year, month = (year, month + 1) if month < 12 else (year + 1, 1)
+            expiry_date = get_last_wednesday(year, month)
+
         expiry_str = expiry_date.strftime("%d%b%y").upper()
-        
-        # Construct symbol name for Bank Nifty
-        symbol = f"BANKNIFTY{expiry_str}{option_type}{strike}"
-        
-        logger.info(f"Attempting to trade: {symbol}")
-        
-        # Determine action
-        action = "S" if signal.type == "EXIT" else "B"
-        
-        # Get real lot size for quantity calculation
+        return f"BANKNIFTY{expiry_str}{option_type}{strike}"
+
+    def _place_order_internal(self, symbol: str, action: str, signal_price: float, tag: str, signal_type: str):
+        """Internal helper for consistent order placement and logging"""
         lot_size = self.instrument_mgr.get_lot_size("BANKNIFTY")
         qty = config.QUANTITY * lot_size
         
-        logger.info(f"Execution Qty: Lots={config.QUANTITY}, LotSize={lot_size}, Total={qty}")
-        
-        # Log order attempt
-        log_order_attempt(action, symbol, qty, strike)
-        
-        # === PAPER TRADING MODE ===
-        if config.PAPER_TRADING_MODE:
-            if signal.type in ["BUY_CE", "BUY_PE"]:
-                # Paper entry
-                self.paper_trading.enter_position(signal.type, signal.price, strike, qty, signal.reason)
-                self.current_entry_price = signal.price
-                
-                msg = (
-                    f"📝 PAPER ENTRY\n"
-                    f"Symbol: {symbol}\n"
-                    f"Action: {action} {qty} lots\n"
-                    f"Type: {signal.type}\n"  
-                    f"Price: ₹{signal.price:.2f}\n"
-                    f"Strike: {strike}\n"
-                    f"Strength: {strength:.2f}"
-                )
-            else:
-                # Paper exit
-                pnl = self.paper_trading.exit_position(signal.price, signal.reason)
-                pnl_display = f"₹{pnl:.2f}" if pnl else "N/A"
-                pnl_emoji = "💚" if pnl and pnl > 0 else "❌" if pnl and pnl < 0 else "⚪"
-                
-                msg = (
-                    f"📝 {pnl_emoji} PAPER EXIT\n"
-                    f"Symbol: {symbol}\n"
-                    f"Action: SELL {qty} lots\n"
-                    f"Exit Price: ₹{signal.price:.2f}\n"
-                    f"Entry Price: ₹{self.current_entry_price:.2f}\n"
-                    f"P&L: {pnl_display}"
-                )
-                self.current_entry_price = None
-            
+        logger.info(f"[{tag}] Attempting {action} {qty} {symbol}")
+        log_order_attempt(action, symbol, qty, 0) # Strike placeholder
+
+        if config.PAPER_TRADING_MODE or self.offline:
+            # Paper Entry Logic
+            self.paper_trading.enter_position(signal_type, signal_price, 0, qty, f"[{tag}] {signal_type}")
+            msg = f"📝 PAPER {tag}: {action} {qty} {symbol} @ ₹{signal_price:.2f}"
             logger.info(msg)
             self.telegram.send_message(msg)
-            return  # Don't place real orders in paper mode
-        
-        # === REAL TRADING MODE ===
+            return
+
         try:
             order_id = self.shoonya.place_order(
-                buy_or_sell=action,
-                product_type="M",
-                exchange="NFO",
-                tradingsymbol=symbol,
-                quantity=qty,
-                discloseqty=0,
-                price_type="MKT",  # Market order
-                price=0,
-                trigger_price=None,
-                retention="DAY",
-                remarks=f"Auto-{signal.type}"
+                buy_or_sell=action, product_type="M", exchange="NFO",
+                tradingsymbol=symbol, quantity=qty, discloseqty=0,
+                price_type="MKT", price=0, trigger_price=None,
+                retention="DAY", remarks=f"Auto-{tag}-{signal_type}"
             )
-            
             if order_id:
-                # Track position and send detailed alert
-                if signal.type in ["BUY_CE", "BUY_PE"]:
-                    # Entry - we don't know exact fill price yet, use signal price as estimate
-                    entry_price_estimate = signal.price
-                    self.current_entry_price = entry_price_estimate
-                    
-                    # Open position in tracker
-                    self.position_tracker.open_position(
-                        symbol=symbol,
-                        entry_price=entry_price_estimate,
-                        quantity=qty,
-                        order_id=order_id
-                    )
-                    
-                    msg = (
-                        f"✅ **ENTRY ORDER PLACED**\n"
-                        f"Symbol: `{symbol}`\n"
-                        f"Action: **{action}** {qty} lots\n"
-                        f"Type: {signal.type}\n"
-                        f"Entry Price (est): ₹{entry_price_estimate:.2f}\n"
-                        f"Strike: {strike}\n"
-                        f"Order ID: {order_id}"
-                    )
+                msg = f"✅ [{tag}] ORDER PLACED: {symbol} (ID: {order_id})"
+                logger.info(msg)
+                self.telegram.send_message(msg)
+            else:
+                logger.error(f"❌ [{tag}] ORDER FAILED for {symbol}")
+        except Exception as e:
+            logger.error(f"❌ [{tag}] EXCEPTION for {symbol}: {e}")
+
+    def _handle_exit_signal(self, signal):
+        """Close all active Bank Nifty option positions"""
+        logger.info("Handling Global EXIT for Bank Nifty positions...")
+        
+        active_found = False
+        # Iterate over all positions in position_manager
+        # (Using list to avoid 'dictionary changed size' during iteration)
+        for (symbol, product), pos in list(self.position_manager.positions.items()):
+            if "BANKNIFTY" in symbol and pos["net_qty"] != 0:
+                active_found = True
+                action = "S" if pos["net_qty"] > 0 else "B"
+                qty = abs(pos["net_qty"])
+                
+                logger.info(f"Closing position: {symbol} ({qty} qty)")
+                
+                if config.PAPER_TRADING_MODE or self.offline:
+                    pnl = self.paper_trading.exit_position(signal.price, signal.reason)
+                    msg = f"📝 PAPER EXIT: {symbol} P&L: ₹{pnl:.2f}"
                 else:
-                    # Exit - calculate P&L
-                    exit_price_estimate = signal.price
-                    pnl = self.position_tracker.close_position(
-                        exit_price=exit_price_estimate,
-                        order_id=order_id
+                    order_id = self.shoonya.place_order(
+                        buy_or_sell=action, product_type=product, exchange="NFO",
+                        tradingsymbol=symbol, quantity=qty, discloseqty=0,
+                        price_type="MKT", price=0, trigger_price=None,
+                        retention="DAY", remarks=f"Auto-EXIT-{signal.reason}"
                     )
-                    
-                    pnl_display = f"₹{pnl:.2f}" if pnl else "N/A"
-                    pnl_emoji = "💚" if pnl and pnl > 0 else "❌" if pnl and pnl < 0 else "⚪"
-                    
-                    msg = (
-                        f"{pnl_emoji} **EXIT ORDER PLACED**\n"
-                        f"Symbol: `{symbol}`\n"
-                        f"Action: **SELL** {qty} lots\n"
-                        f"Exit Price (est): ₹{exit_price_estimate:.2f}\n"
-                        f"Entry Price (est): ₹{self.current_entry_price:.2f}\n"
-                        f"**P&L: {pnl_display}**\n"
-                        f"Order ID: {order_id}"
-                    )
-                    
-                    self.current_entry_price = None
+                    msg = f"⏹️ EXIT ORDER PLACED: {symbol} (ID: {order_id})"
                 
                 logger.info(msg)
-                log_order_result(order_id, symbol, qty, "PLACED")
                 self.telegram.send_message(msg)
-                
-                # Track order for exit logic
-                self.current_order_id = order_id
-                self.current_symbol = symbol
-            else:
-                # Order failed - send detailed error message
-                strength = abs(self.weightage_calc.calculate_weighted_strength())
-                
-                msg = (
-                    f"❌ **ORDER FAILED**\n"
-                    f"Symbol: `{symbol}`\n"
-                    f"Type: {signal.type}\n"
-                    f"Action: **{action}** {qty} lots\n"
-                    f"Price (signal): ₹{signal.price:.2f}\n"
-                    f"Strike: {strike}\n"
-                    f"Strength: {strength:.2f}\n"
-                    f"Reason: {signal.reason}\n"
-                    f"\n⚠️ **Failure**: API returned None\n"
-                    f"Possible causes:\n"
-                    f"- NFO segment not enabled\n"
-                    f"- Invalid symbol\n"
-                    f"- Exchange closed\n"
-                    f"- Network issue"
-                )
-                logger.error(msg)
-                log_order_result("N/A", symbol, qty, "FAILED", "API returned None")
-                self.telegram.send_message(msg)
-                
-        except Exception as e:
-            # Exception during order placement
+
+        if not active_found:
+            logger.info("No active Bank Nifty positions to exit.")
+
+    def execute_signal(self, signal):
+        """Execute the signal with support for Hedged ATM and Straddles."""
+        logger.info(f"🚀 EXECUTING {signal.type} @ {signal.price}")
+        
+        if signal.type == "EXIT":
+            self._handle_exit_signal(signal)
+            return
+
+        orders = []
+        base_atm = round(signal.price / 100) * 100
+        
+        if signal.type == "BUY_STRADDLE":
+            orders.append({'type': 'C', 'strike': base_atm, 'tag': 'MAIN'})
+            orders.append({'type': 'P', 'strike': base_atm, 'tag': 'MAIN'})
+        
+        elif signal.type in ["BUY_CE", "BUY_PE"]:
             strength = abs(self.weightage_calc.calculate_weighted_strength())
+            offset = 200 if strength > 8.0 else (100 if strength > 6.5 else 0)
             
-            msg = (
-                f"❌ **ORDER EXCEPTION**\n"
-                f"Symbol: `{symbol}`\n"
-                f"Type: {signal.type}\n"
-                f"Action: **{action}** {qty} lots\n"
-                f"Price (signal): ₹{signal.price:.2f}\n"
-                f"Strike: {strike}\n"
-                f"Strength: {strength:.2f}\n"
-                f"Reason: {signal.reason}\n"
-                f"\n⚠️ **Error**: {str(e)}\n"
-            )
-            logger.error(msg)
-            log_order_result("N/A", symbol, qty, "EXCEPTION", str(e))
-            self.telegram.send_message(msg)
+            if "CE" in signal.type:
+                orders.append({'type': 'C', 'strike': base_atm + offset, 'tag': 'MAIN'})
+                if config.HEDGED_ENTRIES:
+                    orders.append({'type': 'P', 'strike': base_atm - config.HEDGE_OTM_STEP, 'tag': 'WING'})
+            else:
+                orders.append({'type': 'P', 'strike': base_atm - offset, 'tag': 'MAIN'})
+                if config.HEDGED_ENTRIES:
+                    orders.append({'type': 'C', 'strike': base_atm + config.HEDGE_OTM_STEP, 'tag': 'WING'})
+
+        for order in orders:
+            symbol = self._get_option_symbol(order['type'], order['strike'])
+            self._place_order_internal(symbol, "B", signal.price, order['tag'], signal.type)

@@ -110,6 +110,31 @@ async def get_positions():
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/api/stats")
+async def get_strategy_stats():
+    """Get overall strategy status and risk metrics"""
+    from core import config
+    from main import active_engine
+    
+    stats = {
+        "hedged_mode": config.HEDGED_ENTRIES,
+        "straddle_mode": config.ENABLE_STRADDLES,
+        "daily_loss_limit": config.MAX_DAILY_LOSS,
+        "auto_exit_time": config.AUTO_EXIT_TIME,
+        "current_pnl": 0.0,
+        "auto_trade_enabled": False
+    }
+    
+    if active_engine:
+        stats["auto_trade_enabled"] = active_engine.auto_trading_enabled
+        if hasattr(active_engine, 'position_manager'):
+            pm = active_engine.position_manager
+            # Update P&L before returning
+            total_unrealized = pm.update_pnl(market_data.latest_prices)
+            stats["current_pnl"] = pm.realized_pnl + total_unrealized
+            
+    return stats
+
 @app.get("/api/orders")
 async def get_orders(date: str = None):
     """Get recent order history and logs, optionally filtered by date (YYYY-MM-DD)"""

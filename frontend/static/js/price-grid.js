@@ -38,6 +38,7 @@ class PriceGrid {
 
         this.startPositionSync();
         this.startOrderSync();
+        this.startStatsSync();
 
         // Config
         this.lotSizes = { 'BANKNIFTY': 15, 'NIFTY': 50 }; // Defaults
@@ -149,6 +150,33 @@ class PriceGrid {
             this.autoTradeStatus.textContent = enabled ? 'ON' : 'OFF';
             this.autoTradeStatus.className = 'mode-status ' + (enabled ? 'enabled' : 'disabled');
         }
+    }
+
+    startStatsSync() {
+        this.updateStats(); // Initial fetch
+        setInterval(() => this.updateStats(), 5000);
+    }
+
+    async updateStats() {
+        try {
+            const res = await fetch('/api/stats');
+            const data = await res.json();
+
+            // Strategy Badges
+            const badgeHedged = document.getElementById('badge-hedged');
+            const badgeStraddle = document.getElementById('badge-straddle');
+            if (badgeHedged) badgeHedged.classList.toggle('hidden', !data.hedged_mode);
+            if (badgeStraddle) badgeStraddle.classList.toggle('hidden', !data.straddle_mode);
+
+            // Daily Stop Metric
+            const dailyStopEl = document.getElementById('daily-stop');
+            if (dailyStopEl) dailyStopEl.textContent = `₹${data.daily_loss_limit}`;
+
+            // Sync Auto Trade status (Backend might disable it via Hard Stop)
+            if (this.autoTradeEnabled !== data.auto_trade_enabled) {
+                this.setAutoTrade(data.auto_trade_enabled);
+            }
+        } catch (e) { console.warn('Stats Sync Error', e); }
     }
 
     initHistoryControls() {

@@ -27,7 +27,12 @@ MIN_SIGNAL_CONFIRMATION = 5 # Number of ticks for signal validation
 MIN_SIGNAL_HOLD_TIME = 60 # Seconds between signals
 
 # Paper Trading
-PAPER_TRADING_MODE = os.getenv("PAPER_TRADING_MODE", "true").lower() == "true"  # Default: paper trading ON
+PAPER_TRADING_MODE = os.getenv("PAPER_TRADING_MODE", "true").lower() == "true"
+
+# Advanced Strategy Modes
+HEDGED_ENTRIES = os.getenv("HEDGED_ENTRIES", "FALSE").upper() == "TRUE"
+HEDGE_OTM_STEP = int(os.getenv("HEDGE_OTM_STEP", "1000")) # Points away for protective wing
+ENABLE_STRADDLES = os.getenv("ENABLE_STRADDLES", "FALSE").upper() == "TRUE" # Neutral-Momentum mode
 
 # Signal Quality Filters (for high conviction trades)
 MIN_SIGNAL_STRENGTH = float(os.getenv("MIN_SIGNAL_STRENGTH", "5.5"))  # Minimum strength to generate signal (higher = fewer, better signals)
@@ -35,3 +40,7 @@ MIN_SIGNAL_HOLD_TIME = int(os.getenv("MIN_SIGNAL_HOLD_TIME", "60"))  # Seconds t
 # Trailing Stop Loss
 TSL_PROFIT_HURDLE = float(os.getenv("TSL_PROFIT_HURDLE", "5.0"))  # Activate TSL at 5% profit
 TSL_TRAIL_PERCENT = float(os.getenv("TSL_TRAIL_PERCENT", "5.0"))  # Trail by 5%
+
+# Safety Net / Day Limits
+MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "5000")) # Hard daily stop ₹
+AUTO_EXIT_TIME = os.getenv("AUTO_EXIT_TIME", "15:15") # Square off all at this time

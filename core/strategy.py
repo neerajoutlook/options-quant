@@ -1,5 +1,6 @@
 import pandas as pd
 import logging
+from core import config
 from typing import Dict, Optional, List
 from dataclasses import dataclass
 from datetime import datetime
@@ -269,6 +270,10 @@ class Strategy:
         signal = None
         
         if self.position is None:
+            # Conviction excluding momentum
+            conviction = avg_score - mom_score
+            
+            # 1. High Conviction Directional (CE/PE)
             if avg_score >= self.threshold:
                 reason = f"Score {avg_score:.1f} (Mom: {mom_score:+.1f})"
                 signal = Signal("BUY_CE", "BANKNIFTY", price, reason, timestamp)
@@ -278,6 +283,13 @@ class Strategy:
                 reason = f"Score {avg_score:.1f} (Mom: {mom_score:+.1f})"
                 signal = Signal("BUY_PE", "BANKNIFTY", price, reason, timestamp)
                 self.position = "PE"
+                self.last_signal_time = timestamp
+            
+            # 2. Low Conviction but High Momentum (Neutral Straddle)
+            elif config.ENABLE_STRADDLES and abs(conviction) < 1.0 and abs(mom_score) >= 1.5:
+                reason = f"Straddle: Conviction {conviction:.1f}, Mom Spike {mom_score:+.1f}"
+                signal = Signal("BUY_STRADDLE", "BANKNIFTY", price, reason, timestamp)
+                self.position = "STRADDLE"
                 self.last_signal_time = timestamp
                 
         elif self.position == "CE":
@@ -291,6 +303,13 @@ class Strategy:
             # Exit on score rise or reversal
             if avg_score > -0.5:
                 signal = Signal("EXIT", "BANKNIFTY", price, f"Score faded to {avg_score:.1f}", timestamp)
+                self.position = None
+                self.last_signal_time = timestamp
+
+        elif self.position == "STRADDLE":
+            # Exit on momentum fade or conviction shift
+            if abs(mom_score) < 0.5 or abs(avg_score) > self.threshold:
+                signal = Signal("EXIT", "BANKNIFTY", price, f"Straddle fade (Mom: {mom_score:.1f})", timestamp)
                 self.position = None
                 self.last_signal_time = timestamp
                 

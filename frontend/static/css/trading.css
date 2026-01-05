@@ -72,6 +72,41 @@ body {
     box-shadow: 0 0 5px rgba(239, 68, 68, 0.3);
 }
 
+/* Strategy Badges */
+.strategy-badges {
+    display: inline-flex;
+    gap: 8px;
+    margin-left: 15px;
+    vertical-align: middle;
+}
+
+.s-badge {
+    font-size: 0.72rem;
+    padding: 1px 8px;
+    border-radius: 12px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    border: 1px solid transparent;
+}
+
+#badge-hedged {
+    background: rgba(88, 166, 255, 0.1);
+    color: #58a6ff;
+    border-color: rgba(88, 166, 255, 0.4);
+    box-shadow: 0 0 8px rgba(88, 166, 255, 0.15);
+}
+
+#badge-straddle {
+    background: rgba(188, 128, 255, 0.1);
+    color: #d2a8ff;
+    border-color: rgba(188, 128, 255, 0.4);
+    box-shadow: 0 0 8px rgba(188, 128, 255, 0.15);
+}
+
+.s-badge.hidden {
+    display: none;
+}
+
 .tsl-badge {
     color: #fbbf24;
     background: rgba(251, 191, 36, 0.1);

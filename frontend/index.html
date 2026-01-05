@@ -15,6 +15,10 @@
             <h1>Bank Nifty HFT Dashboard
                 <span id="global-mode-badge" class="mode-badge">PAPER</span>
                 <span id="ai-signal" class="ai-signal-badge">AI: --</span>
+                <div id="strategy-badges" class="strategy-badges">
+                    <span id="badge-hedged" class="s-badge hidden">HEDGED</span>
+                    <span id="badge-straddle" class="s-badge hidden">STRADDLE</span>
+                </div>
             </h1>
             <div class="header-actions">
                 <div class="mode-toggle-container">
@@ -144,6 +148,10 @@
             <div class="metric">
                 <span class="metric-label">Latency:</span>
                 <span id="latency" class="metric-value">-- ms</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Daily Stop:</span>
+                <span id="daily-stop" class="metric-value">₹0</span>
             </div>
             <div class="metric">
                 <span class="metric-label">Symbols:</span>
