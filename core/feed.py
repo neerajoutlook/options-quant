@@ -208,6 +208,224 @@ class TickEngine:
         if "BANKNIFTY" not in self.token_map:
              logger.error("Could not resolve BANKNIFTY token!")
 
+    def subscribe_symbol(self, symbol: str) -> Dict:
+        """Dynamically subscribe to a new stock symbol and its ATM options.
+        
+        Args:
+            symbol: Stock symbol to subscribe to (e.g., 'RELIANCE', 'TCS')
+            
+        Returns:
+            Dict with status and any error message
+        """
+        if symbol in self.tracked_stocks:
+            return {"status": "already_subscribed", "symbol": symbol}
+        
+        if self.offline:
+            return {"status": "error", "message": "Cannot subscribe in offline mode"}
+        
+        try:
+            # 1. Resolve token via API search
+            ret = self.shoonya.search_scrip(exchange="NSE", searchstr=symbol)
+            if not ret or ret.get('stat') != 'Ok' or not ret.get('values'):
+                return {"status": "error", "message": f"Symbol {symbol} not found"}
+            
+            # Find exact match
+            token = None
+            for result in ret['values']:
+                if result.get('symname') == symbol or result.get('tsym') == f"{symbol}-EQ":
+                    token = result['token']
+                    break
+            
+            if not token:
+                return {"status": "error", "message": f"No exact match for {symbol}"}
+            
+            # 2. Add to maps
+            self.token_map[symbol] = token
+            self.reverse_token_map[token] = symbol
+            self.tracked_stocks.add(symbol)
+            
+            # 3. Subscribe to WebSocket feed
+            self.shoonya.subscribe([f"NSE|{token}"])
+            logger.info(f"✅ Subscribed to {symbol} (token: {token})")
+            
+            # 4. Seed historical data for immediate display
+            self._seed_symbol_history(symbol, token)
+            
+            # 5. Subscribe to ATM options
+            ltp = self.market_data.get_ltp(symbol)
+            if ltp and ltp > 0:
+                strike = self.instrument_mgr.calculate_atm_strike(symbol, ltp)
+                self._subscribe_atm_options(symbol, strike)
+            
+            return {"status": "ok", "symbol": symbol, "token": token}
+            
+        except Exception as e:
+            logger.error(f"Failed to subscribe to {symbol}: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def _seed_symbol_history(self, symbol: str, token: str):
+        """Seed historical data for a single symbol."""
+        try:
+            from datetime import datetime, timedelta
+            today = datetime.now()
+            start = (today - timedelta(days=5)).strftime("%d-%m-%Y")
+            end = today.strftime("%d-%m-%Y")
+            
+            hist = self.shoonya.get_time_price_series(
+                exchange="NSE",
+                token=token,
+                starttime=start,
+                endtime=end,
+                interval="15"
+            )
+            
+            if hist and isinstance(hist, list) and len(hist) > 0:
+                latest = hist[0]
+                ltp = float(latest.get('intc', 0))
+                prev_close = float(hist[-1].get('intc', ltp)) if len(hist) > 1 else ltp
+                
+                self.prev_close_map[symbol] = prev_close
+                pct_change = ((ltp - prev_close) / prev_close * 100) if prev_close > 0 else 0
+                
+                self.market_data.update(symbol, {
+                    'ltp': ltp,
+                    'percent_change': round(pct_change, 2),
+                    'volume': int(latest.get('v', 0)),
+                    'timestamp': latest.get('time', '')
+                })
+                logger.info(f"📊 Seeded {symbol}: ₹{ltp:.2f} ({pct_change:+.2f}%)")
+        except Exception as e:
+            logger.error(f"Failed to seed history for {symbol}: {e}")
+
+    def seed_all_nfo_prices(self):
+        """Seed prices for all NFO stocks for watchlist sorting.
+        
+        Uses JSON cache for instant loading on restart.
+        Only fetches via API for missing or stale data.
+        """
+        import json
+        cache_file = "data/nfo_prices_cache.json"
+        
+        try:
+            nfo_symbols = list(self.instrument_mgr.option_map.keys())
+            logger.info(f"⏳ Loading prices for {len(nfo_symbols)} NFO stocks...")
+            
+            # Load from cache first
+            cache = {}
+            cache_time = None
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r') as f:
+                        cache_data = json.load(f)
+                        cache = cache_data.get('prices', {})
+                        cache_time = cache_data.get('timestamp')
+                        logger.info(f"📂 Loaded {len(cache)} cached prices from {cache_time}")
+                except:
+                    pass
+            
+            # Check if cache is fresh (< 4 hours old)
+            from datetime import datetime, timedelta
+            cache_is_fresh = False
+            if cache_time:
+                try:
+                    cache_dt = datetime.fromisoformat(cache_time)
+                    if datetime.now() - cache_dt < timedelta(hours=4):
+                        cache_is_fresh = True
+                except:
+                    pass
+            
+            # Apply cached prices immediately
+            for symbol, data in cache.items():
+                if symbol not in self.market_data.latest_prices:
+                    self.market_data.update(symbol, data)
+            
+            # If cache is fresh, we're done
+            if cache_is_fresh and len(cache) > 100:
+                logger.info(f"✅ Using cached NFO prices ({len(cache)} stocks)")
+                return
+            
+            # Fetch missing prices in background
+            logger.info("🔄 Fetching fresh NFO prices (background)...")
+            
+            today = datetime.now()
+            start = (today - timedelta(days=5)).strftime("%d-%m-%Y")
+            end = today.strftime("%d-%m-%Y")
+            
+            new_prices = dict(cache)  # Start with cached data
+            seeded_count = 0
+            
+            for symbol in nfo_symbols:
+                # Skip if already in cache and cache is reasonably fresh
+                if symbol in cache and cache_is_fresh:
+                    continue
+                    
+                try:
+                    # Resolve token if not already known
+                    if symbol not in self.token_map:
+                        ret = self.shoonya.search_scrip(exchange="NSE", searchstr=symbol)
+                        if ret and ret.get('stat') == 'Ok' and ret.get('values'):
+                            for result in ret['values']:
+                                if result.get('symname') == symbol or result.get('tsym') == f"{symbol}-EQ":
+                                    self.token_map[symbol] = result['token']
+                                    self.reverse_token_map[result['token']] = symbol
+                                    break
+                    
+                    token = self.token_map.get(symbol)
+                    if not token:
+                        continue
+                    
+                    # Fetch DAILY historical data for correct prev close
+                    hist = self.shoonya.get_time_price_series(
+                        exchange="NSE",
+                        token=token,
+                        starttime=start,
+                        endtime=end,
+                        interval="240"  # Use 4-hour candles to get fewer but meaningful data
+                    )
+                    
+                    if hist and isinstance(hist, list) and len(hist) > 0:
+                        # hist[0] is most recent, find yesterday's close
+                        ltp = float(hist[0].get('intc', 0))  # Today's latest
+                        
+                        # Find yesterday's close (last candle from previous day)
+                        today_date = today.date()
+                        prev_close = ltp  # Fallback
+                        for candle in hist:
+                            candle_date = datetime.strptime(candle.get('time', '')[:10], '%d-%m-%Y').date()
+                            if candle_date < today_date:
+                                prev_close = float(candle.get('intc', ltp))
+                                break
+                        
+                        pct_change = ((ltp - prev_close) / prev_close * 100) if prev_close > 0 else 0
+                        
+                        price_data = {
+                            'ltp': ltp,
+                            'percent_change': round(pct_change, 2),
+                            'volume': 0
+                        }
+                        
+                        self.market_data.update(symbol, price_data)
+                        new_prices[symbol] = price_data
+                        seeded_count += 1
+                        
+                        if seeded_count % 20 == 0:
+                            logger.info(f"📊 NFO progress: {seeded_count} new prices fetched")
+                            # Save periodically
+                            with open(cache_file, 'w') as f:
+                                json.dump({'timestamp': today.isoformat(), 'prices': new_prices}, f)
+                            
+                except Exception as e:
+                    pass  # Skip failures silently
+                    
+            # Final save
+            with open(cache_file, 'w') as f:
+                json.dump({'timestamp': today.isoformat(), 'prices': new_prices}, f)
+                
+            logger.info(f"✅ NFO seeding complete: {seeded_count} new + {len(cache)} cached")
+            
+        except Exception as e:
+            logger.error(f"Failed to seed NFO prices: {e}")
+
     def start(self):
         """Start the WebSocket feed and strategy loop."""
         self.running = True
@@ -218,6 +436,8 @@ class TickEngine:
         # Seed historical data for live mode (populates UI with last known prices when market is closed)
         if not config.SIMULATION_MODE and not self.offline:
             self._seed_history()
+            # Seed NFO prices in background for watchlist sorting
+            threading.Thread(target=self.seed_all_nfo_prices, daemon=True).start()
 
         # Fetch Macro Data (Background update) - This should run regardless of sim/live mode
         threading.Thread(target=self._update_macro_data).start()
@@ -699,7 +919,7 @@ class TickEngine:
             search_start_time = now_ist - timedelta(days=3)
             start_ts = search_start_time.timestamp()
 
-            for symbol in self.tracked_stocks:
+            for symbol in list(self.tracked_stocks):
                 token = self.token_map.get(symbol)
                 if not token: continue
 
@@ -820,7 +1040,7 @@ class TickEngine:
         # Seed ATM Options for all tracked stocks (for live mode with no ticks)
         logger.info("⏳ Seeding ATM options for all stocks...")
         from core.market_data import market_data
-        for symbol in self.tracked_stocks:
+        for symbol in list(self.tracked_stocks):
             try:
                 price_data = market_data.latest_prices.get(symbol, {})
                 ltp = price_data.get('ltp', 0)
@@ -857,7 +1077,7 @@ class TickEngine:
                 now = datetime.now(IST)
                 start_time = now - timedelta(days=30)
                 
-                for symbol in self.tracked_stocks:
+                for symbol in list(self.tracked_stocks):
                     token = self.token_map.get(symbol)
                     if not token: continue
                     

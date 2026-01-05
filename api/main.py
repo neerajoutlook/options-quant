@@ -60,6 +60,19 @@ async def get_all_prices():
         "timestamp": datetime.now().isoformat()
     }
 
+@app.get("/api/nfo/symbols")
+async def get_nfo_symbols():
+    """Get all NFO-eligible stock symbols from instruments master"""
+    try:
+        from main import active_engine
+        symbols = []
+        if active_engine and hasattr(active_engine, 'instrument_mgr'):
+            symbols = sorted(list(active_engine.instrument_mgr.option_map.keys()))
+        return {"symbols": symbols, "count": len(symbols)}
+    except Exception as e:
+        logger.error(f"NFO Symbols Error: {e}")
+        return {"symbols": [], "count": 0, "error": str(e)}
+
 @app.get("/api/config")
 async def get_config():
     """Get configuration (Lot sizes, etc)"""
@@ -440,6 +453,23 @@ async def get_market_status_api():
     except Exception as e:
         logger.error(f"Market status error: {e}")
         return {"is_open": False, "reason": "Unknown", "mode": "SIMULATION"}
+
+@app.post("/api/subscribe/{symbol}")
+async def subscribe_symbol(symbol: str):
+    """Dynamically subscribe to a stock's WebSocket feed and ATM options.
+    
+    This is called when user clicks on an NFO stock to open a widget.
+    """
+    try:
+        from main import active_engine
+        if not active_engine:
+            return {"status": "error", "message": "Engine not running"}
+        
+        result = active_engine.subscribe_symbol(symbol.upper())
+        return result
+    except Exception as e:
+        logger.error(f"Subscribe error: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.get("/api/price/{symbol}")
 async def get_symbol_price(symbol: str):

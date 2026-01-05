@@ -64,11 +64,15 @@
             <!-- Left Column: Market Watch -->
             <aside class="col-left market-watch">
                 <div class="col-header">
-                    <span>📊 MARKET WATCH</span>
+                    <span>📊 WATCHLIST</span>
+                    <select id="wl-sort" class="wl-sort-select">
+                        <option value="change">Sort: Change%</option>
+                        <option value="name">Sort: Name</option>
+                        <option value="price">Sort: Price</option>
+                    </select>
                 </div>
-                <div class="market-tabs">
-                    <button class="tab-btn active" onclick="window.priceGrid.switchTab('bears')">🐻 Bears</button>
-                    <button class="tab-btn" onclick="window.priceGrid.switchTab('bulls')">🐂 Bulls</button>
+                <div id="watchlist-tabs" class="watchlist-tabs">
+                    <!-- Dynamic tabs rendered by JS -->
                 </div>
                 <div id="market-list" class="market-list-container">
                     <!-- Dynamic Content -->

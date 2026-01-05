@@ -1,7 +1,7 @@
 /**
  * Ultra-fast Price Grid Rendering
  * Optimized for HFT with minimal DOM manipulation
- * Pro Terminal Edition
+ * Pro Terminal Edition - Watchlist System
  */
 
 class PriceGrid {
@@ -10,10 +10,39 @@ class PriceGrid {
         this.widgets = new Map(); // symbol -> widget element
         this.optionRows = new Map(); // optionSymbol -> row element
 
+        // Watchlist System
+        this.watchlists = [
+            {
+                name: "Bank Nifty",
+                icon: "📊",
+                symbols: ["BANKNIFTY", "HDFCBANK", "ICICIBANK", "KOTAKBANK", "AXISBANK",
+                    "SBIN", "INDUSINDBK", "BANDHANBNK", "FEDERALBNK", "IDFCFIRSTB", "PNB", "AUBANK"],
+                editable: false
+            },
+            {
+                name: "NFO Stocks",
+                icon: "🏢",
+                symbols: [], // Will be populated from market data
+                editable: false
+            },
+            {
+                name: "Custom",
+                icon: "⭐",
+                symbols: [],
+                editable: true
+            }
+        ];
+        this.currentWatchlistIndex = 0;
+        this.sortBy = 'change'; // 'change', 'name', 'price'
+        this.sortAsc = false;
+
+        // Load saved watchlists
+        this.loadWatchlists();
+
         // Market Watch Data
         this.marketData = []; // Store all stock data for sorting
-        this.currentTab = 'bears'; // 'bears' or 'bulls'
         this.marketList = document.getElementById('market-list');
+        this.watchlistTabs = document.getElementById('watchlist-tabs');
 
         // Bank Nifty Hero
         this.bankniftyPrice = document.getElementById('banknifty-price');
@@ -33,6 +62,7 @@ class PriceGrid {
         this.initSimulationControls();
         this.initThresholdSlider();
         this.initTimeframeControl();
+        this.initWatchlistControls();
         this.startOrderSync(); // Start polling for orders
 
         // Config
@@ -41,44 +71,151 @@ class PriceGrid {
 
         // Render loop
         setInterval(() => this.renderMarketWatch(), 2000);
+
+        // Initial render of tabs
+        this.renderWatchlistTabs();
     }
 
-    switchTab(tab) {
-        this.currentTab = tab;
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        const btn = document.querySelector(`.tab-btn[onclick*="${tab}"]`);
-        if (btn) btn.classList.add('active');
-        this.renderMarketWatch(); // Force re-render
+    // Watchlist Methods
+    switchWatchlist(index) {
+        this.currentWatchlistIndex = index;
+        this.renderWatchlistTabs();
+        this.renderMarketWatch();
+    }
+
+    renderWatchlistTabs() {
+        if (!this.watchlistTabs) return;
+
+        const html = this.watchlists.map((wl, i) => `
+            <button class="wl-tab ${i === this.currentWatchlistIndex ? 'active' : ''}" 
+                    onclick="window.priceGrid.switchWatchlist(${i})">
+                ${wl.icon} ${wl.name}
+            </button>
+        `).join('');
+
+        this.watchlistTabs.innerHTML = html;
+    }
+
+    initWatchlistControls() {
+        // Sort dropdown
+        const sortSelect = document.getElementById('wl-sort');
+        if (sortSelect) {
+            sortSelect.addEventListener('change', (e) => {
+                this.sortBy = e.target.value;
+                this.renderMarketWatch();
+            });
+        }
+
+        // Fetch NFO symbols from server
+        this.fetchNfoSymbols();
+    }
+
+    async fetchNfoSymbols() {
+        try {
+            const res = await fetch('/api/nfo/symbols');
+            const data = await res.json();
+            if (data.symbols && data.symbols.length > 0) {
+                this.watchlists[1].symbols = data.symbols;
+                console.log(`📊 Loaded ${data.count} NFO symbols`);
+                this.renderMarketWatch();
+            }
+        } catch (e) {
+            console.error('Failed to fetch NFO symbols:', e);
+        }
+    }
+
+    sortWatchlistData(items) {
+        const sorted = [...items];
+        switch (this.sortBy) {
+            case 'name':
+                sorted.sort((a, b) => a.symbol.localeCompare(b.symbol));
+                break;
+            case 'price':
+                sorted.sort((a, b) => (b.ltp || 0) - (a.ltp || 0));
+                break;
+            case 'change':
+            default:
+                sorted.sort((a, b) => (a.percent_change || 0) - (b.percent_change || 0));
+                break;
+        }
+        return this.sortAsc ? sorted.reverse() : sorted;
     }
 
     renderMarketWatch() {
         if (!this.marketList) return;
 
-        // Filter and Sort
-        let items = [...this.marketData];
-        if (this.currentTab === 'bears') {
-            items.sort((a, b) => a.percent_change - b.percent_change);
-        } else {
-            items.sort((a, b) => b.percent_change - a.percent_change);
-        }
+        const currentWL = this.watchlists[this.currentWatchlistIndex];
+        let watchlistSymbols = currentWL.symbols;
+
+        // Build list: combine watchlist symbols with their market data (if available)
+        let items = watchlistSymbols.map(symbol => {
+            // Find market data for this symbol
+            const data = this.marketData.find(d => d.symbol === symbol);
+            return {
+                symbol: symbol,
+                ltp: data?.ltp || 0,
+                percent_change: data?.percent_change || 0,
+                trend: data?.trend || '-',
+                hasData: !!data
+            };
+        });
+
+        // Sort
+        items = this.sortWatchlistData(items);
 
         const html = items.map(d => `
-            <div class="mw-row ${this.widgets.has(d.symbol) ? 'active-watch' : ''}" onclick="window.priceGrid.toggleWidget('${d.symbol}')">
+            <div class="mw-row ${this.widgets.has(d.symbol) ? 'active-watch' : ''} ${!d.hasData ? 'no-data' : ''}" 
+                 onclick="window.priceGrid.toggleWidget('${d.symbol}')">
                 <div>
                     <span class="mw-sym">${d.symbol}</span>
-                    <span class="mw-trend">${d.trend || '-'}</span>
+                    <span class="mw-trend">${d.trend}</span>
                 </div>
                 <div>
-                    <div class="mw-price">${this.formatPrice(d.ltp)}</div>
+                    <div class="mw-price">${d.hasData ? this.formatPrice(d.ltp) : '--'}</div>
                     <span class="mw-chg ${this.getChangeClass(d.percent_change)}">
-                        ${d.percent_change.toFixed(2)}%
+                        ${d.hasData ? (d.percent_change || 0).toFixed(2) + '%' : '--'}
                     </span>
                 </div>
             </div>
         `).join('');
 
-        this.marketList.innerHTML = html;
+        this.marketList.innerHTML = html || '<div class="empty-list">No symbols in watchlist</div>';
     }
+
+    addToWatchlist(symbol, watchlistIndex = 2) {
+        const wl = this.watchlists[watchlistIndex];
+        if (wl && wl.editable && !wl.symbols.includes(symbol)) {
+            wl.symbols.push(symbol);
+            this.saveWatchlists();
+            this.renderMarketWatch();
+        }
+    }
+
+    removeFromWatchlist(symbol, watchlistIndex = 2) {
+        const wl = this.watchlists[watchlistIndex];
+        if (wl && wl.editable) {
+            wl.symbols = wl.symbols.filter(s => s !== symbol);
+            this.saveWatchlists();
+            this.renderMarketWatch();
+        }
+    }
+
+    saveWatchlists() {
+        try {
+            // Only save custom watchlist (index 2)
+            localStorage.setItem('customWatchlist', JSON.stringify(this.watchlists[2].symbols));
+        } catch (e) { console.error('Failed to save watchlists:', e); }
+    }
+
+    loadWatchlists() {
+        try {
+            const saved = localStorage.getItem('customWatchlist');
+            if (saved) {
+                this.watchlists[2].symbols = JSON.parse(saved);
+            }
+        } catch (e) { console.error('Failed to load watchlists:', e); }
+    }
+
 
     toggleWidget(symbol) {
         if (this.widgets.has(symbol)) {
@@ -100,9 +237,28 @@ class PriceGrid {
         // Save to localStorage
         this.saveOpenWidgets();
 
-        // Trigger immediate update for this widget to fetch/render its options
-        // We need to re-scan our full data snapshot if we have it, or wait for next tick.
-        // For now, next tick/update will populate options.
+        // If no live data, subscribe to WebSocket feed on-demand
+        if (!data.ltp || data.ltp === 0) {
+            this.subscribeToSymbol(symbol);
+        }
+    }
+
+    async subscribeToSymbol(symbol) {
+        try {
+            console.log(`📡 Subscribing to ${symbol}...`);
+            const res = await fetch(`/api/subscribe/${symbol}`, { method: 'POST' });
+            const result = await res.json();
+
+            if (result.status === 'ok') {
+                console.log(`✅ Subscribed to ${symbol} (token: ${result.token})`);
+            } else if (result.status === 'already_subscribed') {
+                console.log(`ℹ️ Already subscribed to ${symbol}`);
+            } else {
+                console.error(`❌ Failed to subscribe to ${symbol}:`, result.message);
+            }
+        } catch (e) {
+            console.error(`❌ Subscribe error for ${symbol}:`, e);
+        }
     }
 
     closeWidget(symbol) {
